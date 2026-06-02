@@ -1,0 +1,146 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\AiSetting;
+use App\Models\Comment;
+use App\Models\CommentReply;
+use App\Models\InboxMessage;
+use App\Models\KnowledgeBase;
+use App\Models\SocialAccount;
+use App\Models\Tenant;
+use App\Models\WebhookLog;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+
+class WebhookController extends Controller
+{
+    public function handle(Request $request)
+    {
+        $payload = $request->all();
+        $eventType = $payload['event'] ?? 'unknown';
+
+        // Log webhook
+        WebhookLog::create([
+            'tenant_id'  => null,
+            'event_type' => $eventType,
+            'payload'    => json_encode($payload),
+            'status'     => 'received',
+            'created_at' => now(),
+        ]);
+
+        try {
+            match ($eventType) {
+                'comment.new'   => $this->handleNewComment($payload),
+                'message.new'   => $this->handleNewMessage($payload),
+                default         => null,
+            };
+
+            return response()->json(['status' => 'ok']);
+        } catch (\Exception $e) {
+            Log::error('Webhook error: ' . $e->getMessage());
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    private function handleNewComment(array $payload): void
+    {
+        $zernioAccountId = $payload['account_id'] ?? null;
+
+        if (!$zernioAccountId) return;
+
+        $socialAccount = SocialAccount::where('zernio_account_id', $zernioAccountId)->first();
+
+        if (!$socialAccount) return;
+
+        $comment = Comment::create([
+            'tenant_id'         => $socialAccount->tenant_id,
+            'social_account_id' => $socialAccount->id,
+            'zernio_comment_id' => $payload['comment_id'] ?? null,
+            'post_id'           => $payload['post_id'] ?? null,
+            'username'          => $payload['username'] ?? 'Unknown',
+            'comment_text'      => $payload['text'] ?? '',
+            'platform'          => $socialAccount->platform,
+            'commented_at'      => now(),
+            'is_replied'        => 0,
+        ]);
+
+        // Check if AI auto-reply is enabled
+        $aiSetting = AiSetting::where('tenant_id', $socialAccount->tenant_id)
+            ->where('auto_reply_enabled', 1)
+            ->first();
+
+        if ($aiSetting) {
+            $this->autoReplyWithAi($comment, $aiSetting);
+        }
+    }
+
+    private function handleNewMessage(array $payload): void
+    {
+        $zernioAccountId = $payload['account_id'] ?? null;
+
+        if (!$zernioAccountId) return;
+
+        $socialAccount = SocialAccount::where('zernio_account_id', $zernioAccountId)->first();
+
+        if (!$socialAccount) return;
+
+        InboxMessage::create([
+            'tenant_id'         => $socialAccount->tenant_id,
+            'social_account_id' => $socialAccount->id,
+            'sender_name'       => $payload['sender_name'] ?? 'Unknown',
+            'sender_id'         => $payload['sender_id'] ?? null,
+            'message_text'      => $payload['text'] ?? '',
+            'platform'          => $socialAccount->platform,
+            'type'              => 'dm',
+            'is_read'           => 0,
+            'received_at'       => now(),
+        ]);
+    }
+
+    private function autoReplyWithAi(Comment $comment, AiSetting $aiSetting): void
+    {
+        $knowledgeBases = KnowledgeBase::where('tenant_id', $comment->tenant_id)->get();
+        $knowledgeText = $knowledgeBases->map(fn($kb) => "{$kb->title}:\n{$kb->content}")->implode("\n\n");
+
+        $systemPrompt = $aiSetting->system_prompt ?? 'Balas dengan ramah dan profesional.';
+        if ($knowledgeText) {
+            $systemPrompt .= "\n\nInformasi bisnis:\n{$knowledgeText}";
+        }
+
+        $openaiKey = config('services.openai.api_key');
+        if (!$openaiKey) return;
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $openaiKey,
+                'Content-Type'  => 'application/json',
+            ])->post('https://api.openai.com/v1/chat/completions', [
+                'model'       => $aiSetting->model ?? 'gpt-4o-mini',
+                'temperature' => (float) ($aiSetting->temperature ?? 0.7),
+                'messages'    => [
+                    ['role' => 'system', 'content' => $systemPrompt],
+                    ['role' => 'user', 'content' => "Balas komentar ini: \"{$comment->comment_text}\""],
+                ],
+                'max_tokens' => 300,
+            ]);
+
+            if ($response->ok()) {
+                $replyText = $response->json('choices.0.message.content');
+
+                CommentReply::create([
+                    'comment_id' => $comment->id,
+                    'tenant_id'  => $comment->tenant_id,
+                    'reply_text' => $replyText,
+                    'source'     => 'ai',
+                    'replied_at' => now(),
+                ]);
+
+                $comment->update(['is_replied' => 1]);
+            }
+        } catch (\Exception $e) {
+            Log::error('Auto AI reply failed: ' . $e->getMessage());
+        }
+    }
+}

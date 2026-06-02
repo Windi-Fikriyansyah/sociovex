@@ -3,49 +3,65 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Models\Package;
+use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules;
-use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class RegisteredUserController extends Controller
 {
-    /**
-     * Display the registration view.
-     */
     public function create(): View
     {
-        return view('auth.register');
+        $packages = Package::all();
+        return view('auth.register', compact('packages'));
     }
 
-    /**
-     * Handle an incoming registration request.
-     *
-     * @throws ValidationException
-     */
     public function store(Request $request): RedirectResponse
     {
         $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:'.User::class],
-            'password' => ['required', 'confirmed', Rules\Password::defaults()],
+            'business_name' => ['required', 'string', 'max:255'],
+            'owner_name'    => ['required', 'string', 'max:255'],
+            'email'         => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:' . User::class],
+            'phone'         => ['nullable', 'string', 'max:50'],
+            'password'      => ['required', 'confirmed', Rules\Password::defaults()],
         ]);
 
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-        ]);
+        DB::transaction(function () use ($request) {
+            // Create tenant
+            $basicPackage = Package::where('name', 'Basic')->first();
 
-        event(new Registered($user));
+            $tenant = Tenant::create([
+                'business_name' => $request->business_name,
+                'owner_name'    => $request->owner_name,
+                'email'         => $request->email,
+                'phone'         => $request->phone,
+                'package_id'    => $basicPackage?->id,
+                'status'        => 'active',
+                'expired_at'    => now()->addDays(14), // 14 day trial
+            ]);
 
-        Auth::login($user);
+            // Create user linked to tenant
+            $user = User::create([
+                'tenant_id' => $tenant->id,
+                'name'      => $request->owner_name,
+                'email'     => $request->email,
+                'password'  => Hash::make($request->password),
+                'role'      => 'owner',
+                'status'    => 1,
+            ]);
 
-        return redirect(route('dashboard', absolute: false));
+            event(new Registered($user));
+
+            Auth::login($user);
+        });
+
+        return redirect()->route('dashboard');
     }
 }

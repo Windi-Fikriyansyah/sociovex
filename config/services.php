@@ -35,4 +35,19 @@ return [
         ],
     ],
 
+    'openai' => [
+        'api_key' => env('OPENAI_API_KEY'),
+    ],
+
+    'zernio' => [
+        'api_key'  => env('ZERNIO_API_KEY'),
+        'base_url' => env('ZERNIO_BASE_URL', 'https://api.zernio.io'),
+    ],
+
+    'midtrans' => [
+        'server_key' => env('MIDTRANS_SERVER_KEY'),
+        'client_key' => env('MIDTRANS_CLIENT_KEY'),
+        'is_production' => env('MIDTRANS_IS_PRODUCTION', false),
+    ],
+
 ];
