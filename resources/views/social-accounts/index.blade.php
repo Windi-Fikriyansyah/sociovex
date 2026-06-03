@@ -8,114 +8,161 @@
 @endsection
 
 @section('content')
+
+@if(session('success'))
+    <div class="alert alert-success alert-dismissible fade show" role="alert">
+        <i class="ti ti-circle-check me-2"></i>{{ session('success') }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
+@if(session('error') || $errors->any())
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <i class="ti ti-alert-circle me-2"></i>
+        {{ session('error') ?? $errors->first() }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
 <div class="row">
-    <!-- Connect New Account -->
+    {{-- ── Connect New Account ─────────────────────────────────────────── --}}
     <div class="col-lg-4">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0"><i class="ti ti-plug-connected me-2 text-primary"></i>Hubungkan Akun Baru</h5>
+                <h5 class="mb-0">
+                    <i class="ti ti-plug-connected me-2 text-primary"></i>Hubungkan Akun Baru
+                </h5>
             </div>
             <div class="card-body">
                 @php
-                    $package = $tenant->package;
+                    $package      = $tenant->package;
                     $currentCount = $accounts->where('status', 'active')->count();
-                    $maxAccounts = $package?->max_social_accounts ?? 1;
-                    $canAdd = $currentCount < $maxAccounts;
+                    $maxAccounts  = $package?->max_social_accounts ?? 1;
+                    $canAdd       = $currentCount < $maxAccounts;
                 @endphp
 
-                <div class="alert alert-info d-flex align-items-center mb-3">
+                <div class="alert alert-info d-flex align-items-center mb-3 py-2">
                     <i class="ti ti-info-circle me-2"></i>
                     <div>
                         Terhubung: <strong>{{ $currentCount }}/{{ $maxAccounts }}</strong> akun
-                        (Paket <strong>{{ $package?->name ?? 'Trial' }}</strong>)
+                        &nbsp;·&nbsp; Paket <strong>{{ $package?->name ?? 'Trial' }}</strong>
                     </div>
                 </div>
 
                 @if(!$canAdd)
                     <div class="alert alert-warning">
                         <i class="ti ti-alert-triangle me-2"></i>
-                        Batas akun tercapai. <a href="{{ route('subscription.index') }}">Upgrade paket</a> untuk akun lebih banyak.
+                        Batas akun tercapai.
+                        <a href="{{ route('subscription.index') }}">Upgrade paket</a> untuk akun lebih banyak.
                     </div>
                 @else
-                    <form action="{{ route('social-accounts.connect') }}" method="POST">
-                        @csrf
-                        <p class="text-muted mb-3">Pilih platform yang ingin dihubungkan:</p>
-                        <div class="row g-2">
-                            @foreach([
-                                ['instagram', 'ti ti-brand-instagram', '#E1306C', 'Instagram'],
-                                ['facebook', 'ti ti-brand-facebook', '#1877F2', 'Facebook'],
-                                ['linkedin', 'ti ti-brand-linkedin', '#0A66C2', 'LinkedIn'],
-                                ['tiktok', 'ti ti-brand-tiktok', '#000', 'TikTok'],
-                                ['threads', 'ti ti-brand-threads', '#000', 'Threads'],
-                                ['x', 'ti ti-brand-x', '#1DA1F2', 'X (Twitter)'],
-                                ['youtube', 'ti ti-brand-youtube', '#FF0000', 'YouTube'],
-                            ] as [$slug, $icon, $color, $label])
-                            <div class="col-6">
-                                <button type="submit" name="platform" value="{{ $slug }}"
-                                    class="btn w-100 d-flex align-items-center gap-2"
-                                    style="border: 2px solid {{ $color }}; color: {{ $color }}; background: transparent; padding: 8px 12px; font-size:13px;">
-                                    <i class="{{ $icon }}" style="font-size:18px;"></i>
-                                    {{ $label }}
-                                </button>
-                            </div>
-                            @endforeach
+                    <p class="text-muted mb-3 small">Pilih platform yang ingin dihubungkan:</p>
+                    <div class="row g-2">
+                        @foreach([
+                            ['instagram', 'ti ti-brand-instagram', '#E1306C', 'Instagram'],
+                            ['facebook',  'ti ti-brand-facebook',  '#1877F2', 'Facebook'],
+                            ['linkedin',  'ti ti-brand-linkedin',  '#0A66C2', 'LinkedIn'],
+                            ['tiktok',    'ti ti-brand-tiktok',    '#010101', 'TikTok'],
+                            ['threads',   'ti ti-brand-threads',   '#010101', 'Threads'],
+                            ['x',         'ti ti-brand-x',         '#1DA1F2', 'X (Twitter)'],
+                            ['youtube',   'ti ti-brand-youtube',   '#FF0000', 'YouTube'],
+                        ] as [$slug, $icon, $color, $label])
+                        <div class="col-6">
+                            <a href="{{ route('social-accounts.connect', ['platform' => $slug]) }}"
+                               class="btn btn-sm w-100 d-flex align-items-center justify-content-start gap-2"
+                               style="border:2px solid {{ $color }};color:{{ $color }};background:transparent;">
+                                <i class="{{ $icon }}" style="font-size:17px;flex-shrink:0;"></i>
+                                <span>{{ $label }}</span>
+                            </a>
                         </div>
-                    </form>
+                        @endforeach
+                    </div>
                 @endif
             </div>
         </div>
     </div>
 
-    <!-- Connected Accounts List -->
+    {{-- ── Connected Accounts ──────────────────────────────────────────── --}}
     <div class="col-lg-8">
         <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="ti ti-list me-2"></i>Akun Terhubung ({{ $accounts->count() }})</h5>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="ti ti-list me-2"></i>Akun Terhubung
+                    <span class="badge bg-primary ms-1">{{ $accounts->count() }}</span>
+                </h5>
             </div>
             <div class="card-body p-0">
                 @forelse($accounts as $account)
                 <div class="d-flex align-items-center px-4 py-3 border-bottom">
+
+                    {{-- Avatar --}}
                     <div class="flex-shrink-0">
                         @if($account->avatar)
-                            <img src="{{ $account->avatar }}" alt="avatar" class="rounded-circle" width="48" height="48">
+                            <img src="{{ $account->avatar }}" alt="avatar"
+                                 class="rounded-circle" width="46" height="46"
+                                 style="object-fit:cover;">
                         @else
-                            <div style="width:48px;height:48px;border-radius:50%;background:#e9ecef;display:flex;align-items:center;justify-content:center;">
-                                <i class="{{ $account->platform_icon }}" style="font-size:22px;color:{{ $account->platform_color }};"></i>
+                            <div style="width:46px;height:46px;border-radius:50%;
+                                        background:#e9ecef;display:flex;
+                                        align-items:center;justify-content:center;">
+                                <i class="{{ $account->platform_icon }}"
+                                   style="font-size:22px;color:{{ $account->platform_color }};"></i>
                             </div>
                         @endif
                     </div>
-                    <div class="flex-grow-1 ms-3">
-                        <div class="fw-semibold">{{ $account->profile_name ?? $account->username }}</div>
-                        <div class="text-muted" style="font-size:13px;">@{{ $account->username }}</div>
-                        <span class="platform-badge platform-{{ $account->platform }} mt-1">
-                            <i class="{{ $account->platform_icon }}"></i>
-                            {{ ucfirst($account->platform) }}
-                        </span>
-                    </div>
-                    <div class="text-center mx-3">
-                        @if($account->status === 'active')
-                            <span class="badge bg-success">Aktif</span>
-                        @else
-                            <span class="badge bg-secondary">Terputus</span>
-                        @endif
-                        <div class="text-muted mt-1" style="font-size:11px;">
-                            {{ $account->connected_at?->format('d M Y') ?? '-' }}
+
+                    {{-- Info --}}
+                    <div class="flex-grow-1 ms-3 overflow-hidden">
+                        {{-- Display name: prefer username, fall back to profile_name --}}
+                        @php
+                            $displayName = $account->username ?: $account->profile_name ?: '—';
+                        @endphp
+                        <div class="fw-semibold text-truncate">{{ $displayName }}</div>
+                        <div class="d-flex align-items-center gap-2 mt-1">
+                            <span style="
+                                display:inline-flex;align-items:center;gap:4px;
+                                font-size:12px;padding:2px 8px;border-radius:20px;
+                                background:{{ $account->platform_color }}22;
+                                color:{{ $account->platform_color }};font-weight:600;">
+                                <i class="{{ $account->platform_icon }}"></i>
+                                {{ ucfirst($account->platform) }}
+                            </span>
+                            @if($account->connected_at)
+                                <span class="text-muted" style="font-size:11px;">
+                                    {{ $account->connected_at->format('d M Y') }}
+                                </span>
+                            @endif
                         </div>
                     </div>
-                    <div class="d-flex gap-2">
+
+                    {{-- Status badge --}}
+                    <div class="mx-3 text-center flex-shrink-0">
+                        @if($account->status === 'active')
+                            <span class="badge bg-success-subtle text-success">Aktif</span>
+                        @else
+                            <span class="badge bg-secondary-subtle text-secondary">Terputus</span>
+                        @endif
+                    </div>
+
+                    {{-- Actions --}}
+                    <div class="d-flex gap-2 flex-shrink-0">
                         @if($account->status === 'active')
                             <form action="{{ route('social-accounts.disconnect', $account) }}" method="POST">
                                 @csrf @method('PATCH')
-                                <button type="submit" class="btn btn-sm btn-outline-warning"
-                                    onclick="return confirm('Putuskan akun ini?')">
+                                <button type="submit"
+                                        class="btn btn-sm btn-outline-warning"
+                                        title="Putuskan koneksi"
+                                        onclick="return confirm('Putuskan akun {{ $account->username }}?')">
                                     <i class="ti ti-plug-x"></i>
                                 </button>
                             </form>
                         @endif
                         <form action="{{ route('social-accounts.destroy', $account) }}" method="POST">
                             @csrf @method('DELETE')
-                            <button type="submit" class="btn btn-sm btn-outline-danger"
-                                onclick="return confirm('Hapus akun ini? Data terkait tidak akan dihapus.')">
+                            <button type="submit"
+                                    class="btn btn-sm btn-outline-danger"
+                                    title="Hapus akun"
+                                    onclick="return confirm('Hapus akun {{ $account->username }}? Data terkait tidak ikut terhapus.')">
                                 <i class="ti ti-trash"></i>
                             </button>
                         </form>
@@ -123,9 +170,9 @@
                 </div>
                 @empty
                 <div class="text-center py-5">
-                    <i class="ti ti-plug-connected" style="font-size:64px;color:#dee2e6;"></i>
+                    <i class="ti ti-plug-connected" style="font-size:60px;color:#dee2e6;"></i>
                     <h5 class="mt-3 text-muted">Belum ada akun terhubung</h5>
-                    <p class="text-muted">Hubungkan akun sosial media Anda untuk mulai posting.</p>
+                    <p class="text-muted small">Hubungkan akun sosial media Anda untuk mulai posting.</p>
                 </div>
                 @endforelse
             </div>

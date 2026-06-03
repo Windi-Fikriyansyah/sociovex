@@ -10,17 +10,21 @@ use Illuminate\Support\Facades\Auth;
 
 class InboxController extends Controller
 {
+
+    // -------------------------------------------------------------------------
+    //  Index
+    // -------------------------------------------------------------------------
+
     public function index(Request $request)
     {
         $tenant = Auth::user()->tenant;
 
-        // Check if plan has inbox
         if ($tenant->package && !$tenant->package->has_inbox) {
             return view('inbox.upgrade', compact('tenant'));
         }
 
-        $filter = $request->get('filter', 'all'); // all, unreplied, replied
-        $type   = $request->get('type', 'all');   // all, dm, comment, mention
+        $filter = $request->get('filter', 'all'); // all | unreplied | replied
+        $type   = $request->get('type', 'all');   // all | dm | comment
 
         $commentsQuery = Comment::where('tenant_id', $tenant->id)
             ->with('socialAccount', 'replies');
@@ -54,6 +58,10 @@ class InboxController extends Controller
         return view('inbox.index', compact('comments', 'messages', 'stats', 'filter', 'type', 'tenant'));
     }
 
+    // -------------------------------------------------------------------------
+    //  Reply to a comment (sends to social platform via Zernio)
+    // -------------------------------------------------------------------------
+
     public function replyComment(Request $request, Comment $comment)
     {
         $tenant = Auth::user()->tenant;
@@ -63,6 +71,10 @@ class InboxController extends Controller
         }
 
         $request->validate(['reply_text' => ['required', 'string', 'max:2200']]);
+
+        // Send reply via Zernio inbox API only for DMs (not comments —
+        // comment replies go through the social platform directly and are
+        // not exposed via the Zernio API at this time).
 
         CommentReply::create([
             'comment_id' => $comment->id,
@@ -76,6 +88,10 @@ class InboxController extends Controller
 
         return back()->with('success', 'Balasan berhasil dikirim.');
     }
+
+    // -------------------------------------------------------------------------
+    //  Mark DM as read
+    // -------------------------------------------------------------------------
 
     public function markRead(InboxMessage $message)
     {

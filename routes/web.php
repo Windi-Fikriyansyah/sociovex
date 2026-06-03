@@ -20,8 +20,13 @@ Route::get('/', function () {
 // Webhook (no auth - called by Zernio)
 Route::post('/webhook/zernio', [WebhookController::class, 'handle'])->name('webhook.zernio');
 
+// OAuth callback from Zernio — outside auth middleware, no signature required.
+// Security is handled by a short-lived token stored in the cache (set during connect).
+Route::get('/social-accounts/oauth-callback/{platform}', [SocialAccountController::class, 'callback'])
+    ->name('social-accounts.oauth-callback');
+
 // Authenticated routes
-Route::middleware(['auth', 'verified'])->group(function () {
+Route::middleware(['auth', 'verified', 'tenant.active'])->group(function () {
 
     // Dashboard
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
@@ -34,9 +39,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Social Accounts
     Route::prefix('social-accounts')->name('social-accounts.')->group(function () {
         Route::get('/', [SocialAccountController::class, 'index'])->name('index');
-        Route::post('/connect', [SocialAccountController::class, 'connect'])->name('connect');
-        Route::get('/oauth-redirect', [SocialAccountController::class, 'oauthRedirect'])->name('oauth-redirect');
-        Route::post('/oauth-callback', [SocialAccountController::class, 'oauthCallback'])->name('oauth-callback');
+        Route::get('/connect/{platform}', [SocialAccountController::class, 'connect'])->name('connect');
         Route::patch('/{socialAccount}/disconnect', [SocialAccountController::class, 'disconnect'])->name('disconnect');
         Route::delete('/{socialAccount}', [SocialAccountController::class, 'destroy'])->name('destroy');
     });

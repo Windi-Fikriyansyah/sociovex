@@ -7,8 +7,9 @@ use App\Models\Comment;
 use App\Models\CommentReply;
 use App\Models\InboxMessage;
 use App\Models\KnowledgeBase;
+use App\Models\Post;
+use App\Models\ScheduledPost;
 use App\Models\SocialAccount;
-use App\Models\Tenant;
 use App\Models\WebhookLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -16,33 +17,83 @@ use Illuminate\Support\Facades\Log;
 
 class WebhookController extends Controller
 {
+    // -------------------------------------------------------------------------
+    //  Entry point
+    // -------------------------------------------------------------------------
+
     public function handle(Request $request)
     {
-        $payload = $request->all();
+        // --- Signature verification ---
+        if (!$this->verifySignature($request)) {
+            Log::warning('Zernio webhook: invalid signature', ['ip' => $request->ip()]);
+            return response()->json(['status' => 'forbidden'], 403);
+        }
+
+        $payload   = $request->all();
         $eventType = $payload['event'] ?? 'unknown';
 
-        // Log webhook
-        WebhookLog::create([
+        // Log every webhook regardless of outcome
+        $log = WebhookLog::create([
             'tenant_id'  => null,
             'event_type' => $eventType,
             'payload'    => json_encode($payload),
             'status'     => 'received',
-            'created_at' => now(),
         ]);
 
         try {
             match ($eventType) {
-                'comment.new'   => $this->handleNewComment($payload),
-                'message.new'   => $this->handleNewMessage($payload),
-                default         => null,
+                'comment.new'    => $this->handleNewComment($payload),
+                'message.new'    => $this->handleNewMessage($payload),
+                'post.published' => $this->handlePostPublished($payload),
+                'post.failed'    => $this->handlePostFailed($payload),
+                default          => null,
             };
 
+            $log->update(['status' => 'processed']);
+
             return response()->json(['status' => 'ok']);
+
         } catch (\Exception $e) {
-            Log::error('Webhook error: ' . $e->getMessage());
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+            Log::error('Webhook processing error: ' . $e->getMessage(), [
+                'event'   => $eventType,
+                'payload' => $payload,
+            ]);
+
+            $log->update(['status' => 'error']);
+
+            // Return 200 to prevent Zernio from retrying on our application errors
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()]);
         }
     }
+
+    // -------------------------------------------------------------------------
+    //  Signature verification
+    // -------------------------------------------------------------------------
+
+    private function verifySignature(Request $request): bool
+    {
+        $secret = config('services.zernio.webhook_secret');
+
+        // If no secret is configured, skip verification (dev mode)
+        if (empty($secret)) {
+            return true;
+        }
+
+        $signature = $request->header('X-Zernio-Signature')
+            ?? $request->header('X-Webhook-Signature');
+
+        if (!$signature) {
+            return false;
+        }
+
+        $expected = 'sha256=' . hash_hmac('sha256', $request->getContent(), $secret);
+
+        return hash_equals($expected, $signature);
+    }
+
+    // -------------------------------------------------------------------------
+    //  Event handlers
+    // -------------------------------------------------------------------------
 
     private function handleNewComment(array $payload): void
     {
@@ -52,7 +103,10 @@ class WebhookController extends Controller
 
         $socialAccount = SocialAccount::where('zernio_account_id', $zernioAccountId)->first();
 
-        if (!$socialAccount) return;
+        if (!$socialAccount) {
+            Log::warning("Webhook comment.new: unknown account_id {$zernioAccountId}");
+            return;
+        }
 
         $comment = Comment::create([
             'tenant_id'         => $socialAccount->tenant_id,
@@ -84,7 +138,10 @@ class WebhookController extends Controller
 
         $socialAccount = SocialAccount::where('zernio_account_id', $zernioAccountId)->first();
 
-        if (!$socialAccount) return;
+        if (!$socialAccount) {
+            Log::warning("Webhook message.new: unknown account_id {$zernioAccountId}");
+            return;
+        }
 
         InboxMessage::create([
             'tenant_id'         => $socialAccount->tenant_id,
@@ -99,10 +156,52 @@ class WebhookController extends Controller
         ]);
     }
 
+    /**
+     * Zernio notifies us when a scheduled post has been successfully published.
+     */
+    private function handlePostPublished(array $payload): void
+    {
+        $zernioPostId = $payload['post_id'] ?? null;
+
+        if (!$zernioPostId) return;
+
+        // Update ScheduledPost status
+        ScheduledPost::where('zernio_post_id', $zernioPostId)
+            ->update(['status' => 'published']);
+
+        // Update Post with post_url if provided
+        if ($postUrl = $payload['post_url'] ?? null) {
+            Post::where('zernio_post_id', $zernioPostId)
+                ->update(['post_url' => $postUrl]);
+        }
+    }
+
+    /**
+     * Zernio notifies us when a scheduled post has failed.
+     */
+    private function handlePostFailed(array $payload): void
+    {
+        $zernioPostId = $payload['post_id'] ?? null;
+
+        if (!$zernioPostId) return;
+
+        ScheduledPost::where('zernio_post_id', $zernioPostId)
+            ->update(['status' => 'failed']);
+
+        Log::error('Zernio post.failed', [
+            'zernio_post_id' => $zernioPostId,
+            'reason'         => $payload['reason'] ?? 'unknown',
+        ]);
+    }
+
+    // -------------------------------------------------------------------------
+    //  AI auto-reply
+    // -------------------------------------------------------------------------
+
     private function autoReplyWithAi(Comment $comment, AiSetting $aiSetting): void
     {
         $knowledgeBases = KnowledgeBase::where('tenant_id', $comment->tenant_id)->get();
-        $knowledgeText = $knowledgeBases->map(fn($kb) => "{$kb->title}:\n{$kb->content}")->implode("\n\n");
+        $knowledgeText  = $knowledgeBases->map(fn($kb) => "{$kb->title}:\n{$kb->content}")->implode("\n\n");
 
         $systemPrompt = $aiSetting->system_prompt ?? 'Balas dengan ramah dan profesional.';
         if ($knowledgeText) {
@@ -116,7 +215,8 @@ class WebhookController extends Controller
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $openaiKey,
                 'Content-Type'  => 'application/json',
-            ])->post('https://api.openai.com/v1/chat/completions', [
+            ])->timeout(30)
+              ->post('https://api.openai.com/v1/chat/completions', [
                 'model'       => $aiSetting->model ?? 'gpt-4o-mini',
                 'temperature' => (float) ($aiSetting->temperature ?? 0.7),
                 'messages'    => [
@@ -138,9 +238,13 @@ class WebhookController extends Controller
                 ]);
 
                 $comment->update(['is_replied' => 1]);
+
+                Log::info("AI auto-reply sent for comment {$comment->id}");
+            } else {
+                Log::error('OpenAI auto-reply failed', ['status' => $response->status(), 'body' => $response->body()]);
             }
         } catch (\Exception $e) {
-            Log::error('Auto AI reply failed: ' . $e->getMessage());
+            Log::error('Auto AI reply exception: ' . $e->getMessage());
         }
     }
 }

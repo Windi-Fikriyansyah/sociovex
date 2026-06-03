@@ -13,6 +13,16 @@ class ActivityLog extends Model
         'tenant_id', 'user_id', 'activity', 'description', 'ip_address', 'created_at',
     ];
 
+    protected static function boot(): void
+    {
+        parent::boot();
+        static::creating(function ($model) {
+            if (empty($model->created_at)) {
+                $model->created_at = now();
+            }
+        });
+    }
+
     public function tenant(): BelongsTo
     {
         return $this->belongsTo(Tenant::class);

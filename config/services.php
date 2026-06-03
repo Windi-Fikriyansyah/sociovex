@@ -40,8 +40,9 @@ return [
     ],
 
     'zernio' => [
-        'api_key'  => env('ZERNIO_API_KEY'),
-        'base_url' => env('ZERNIO_BASE_URL', 'https://api.zernio.io'),
+        'api_key'        => env('ZERNIO_API_KEY'),
+        'base_url'       => env('ZERNIO_BASE_URL', 'https://zernio.com'),
+        'webhook_secret' => env('ZERNIO_WEBHOOK_SECRET'),
     ],
 
     'midtrans' => [
