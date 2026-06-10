@@ -68,13 +68,14 @@ Route::middleware(['auth', 'verified', 'tenant.active'])->group(function () {
     Route::prefix('inbox')->name('inbox.')->group(function () {
         Route::get('/', [InboxController::class, 'index'])->name('index');
         Route::get('/messages', [InboxController::class, 'messages'])->name('messages');
+        Route::get('/conversations/json', [InboxController::class, 'conversationsJson'])->name('conversations.json');
+        Route::get('/events', [InboxController::class, 'inboxEvents'])->name('events');
         Route::get('/comments', [InboxController::class, 'comments'])->name('comments');
         Route::post('/comments/{comment}/reply', [InboxController::class, 'replyComment'])->name('reply-comment');
         Route::patch('/messages/{message}/read', [InboxController::class, 'markRead'])->name('mark-read');
-        Route::get(
-    '/messages/{id}',
-    [InboxController::class, 'conversationMessages']
-)->name('conversation.messages');
+        Route::get('/messages/{id}', [InboxController::class, 'conversationMessages'])->name('conversation.messages');
+        Route::post('/messages/{conversationId}/reply', [InboxController::class, 'sendConversationReply'])->name('conversation.reply');
+        Route::post('/messages/{conversationId}/mark-read', [InboxController::class, 'markConversationRead'])->name('conversation.mark-read');
     });
 
     // AI Settings

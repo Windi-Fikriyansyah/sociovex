@@ -14,8 +14,6 @@ use RuntimeException;
 
 class PostController extends Controller
 {
-    public function __construct(private ZernioService $zernio) {}
-
     // -------------------------------------------------------------------------
     //  List
     // -------------------------------------------------------------------------
@@ -63,10 +61,11 @@ class PostController extends Controller
 
         $tenant = Auth::user()->tenant;
 
-        // Verify accounts belong to this tenant and are active
+        // Verify accounts belong to this tenant and are active, load the API key relation
         $accounts = SocialAccount::whereIn('id', $request->social_accounts)
             ->where('tenant_id', $tenant->id)
             ->where('status', 'active')
+            ->with('zernioApiKey')
             ->get();
 
         if ($accounts->isEmpty()) {
@@ -104,6 +103,19 @@ class PostController extends Controller
     //  Private helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * Resolve the ZernioService for a given social account.
+     * Uses the account's linked API key, falls back to tenant's first key, then global config.
+     */
+    private function zernioForAccount(SocialAccount $account, $tenant): ZernioService
+    {
+        if ($account->zernioApiKey) {
+            return new ZernioService($account->zernioApiKey->api_key);
+        }
+
+        return ZernioService::forTenant($tenant);
+    }
+
     private function publishNow(Request $request, $tenant, $accounts, string $fullText, string $caption, ?string $hashtags, ?string $mediaUrl)
     {
         $errors    = [];
@@ -111,6 +123,8 @@ class PostController extends Controller
 
         foreach ($accounts as $account) {
             try {
+                $zernio = $this->zernioForAccount($account, $tenant);
+
                 $payload = [
                     'profileId'  => $tenant->zernio_profile_id,
                     'accountIds' => [$account->zernio_account_id],
@@ -121,7 +135,7 @@ class PostController extends Controller
                     $payload['mediaUrls'] = [$mediaUrl];
                 }
 
-                $zernioPostId = $this->zernio->publishPost($payload);
+                $zernioPostId = $zernio->publishPost($payload);
 
                 Post::create([
                     'tenant_id'         => $tenant->id,
@@ -170,6 +184,8 @@ class PostController extends Controller
 
         foreach ($accounts as $account) {
             try {
+                $zernio = $this->zernioForAccount($account, $tenant);
+
                 $payload = [
                     'profileId'  => $tenant->zernio_profile_id,
                     'accountIds' => [$account->zernio_account_id],
@@ -181,7 +197,7 @@ class PostController extends Controller
                     $payload['mediaUrls'] = [$mediaUrl];
                 }
 
-                $zernioPostId = $this->zernio->schedulePost($payload);
+                $zernioPostId = $zernio->schedulePost($payload);
 
                 ScheduledPost::create([
                     'tenant_id'          => $tenant->id,

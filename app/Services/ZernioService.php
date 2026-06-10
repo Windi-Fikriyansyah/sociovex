@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Tenant;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -17,10 +18,30 @@ class ZernioService
     protected const MAX_RETRIES = 3;       // Max retry attempts
     protected const RETRY_DELAY = 500;     // Initial retry delay in ms (exponential backoff)
 
-    public function __construct()
+    public function __construct(?string $apiKey = null)
     {
         $this->baseUrl = rtrim(config('services.zernio.base_url', 'https://api.zernio.com'), '/');
-        $this->apiKey  = config('services.zernio.api_key', '');
+        $this->apiKey  = $apiKey ?? config('services.zernio.api_key', '');
+    }
+
+    /**
+     * Set the API key at runtime.
+     */
+    public function setApiKey(string $apiKey): static
+    {
+        $this->apiKey = $apiKey;
+        return $this;
+    }
+
+    /**
+     * Create a ZernioService instance configured with the tenant's first active API key.
+     * Falls back to the global config key if the tenant has no keys.
+     */
+    public static function forTenant(Tenant $tenant): static
+    {
+        $firstKey = $tenant->zernioApiKeys()->where('is_active', true)->first();
+
+        return new static($firstKey?->api_key);
     }
 
     /**
@@ -277,7 +298,7 @@ class ZernioService
     // ─── Inbox ───────────────────────────────────────────────────────────────
 
     /**
-     * Get inbox messages for a profile.
+     * Get inbox messages for a profile (legacy).
      */
     public function getInbox(string $profileId): array
     {
@@ -289,7 +310,98 @@ class ZernioService
     }
 
     /**
-     * Reply to an inbox message.
+     * List inbox conversations.
+     *
+     * GET /v1/inbox/conversations?profileId=...&platform=...&accountId=...
+     */
+    public function getInboxConversations(array $params = []): array
+    {
+        return $this->executeWithRetry(function () use ($params) {
+            $response = $this->client()->get(
+                $this->url('v1/inbox/conversations'),
+                array_filter([
+                    'profileId' => $params['profileId'] ?? null,
+                    'platform'  => $params['platform'] ?? null,
+                    'status'    => $params['status'] ?? 'active',
+                    'sortOrder' => $params['sortOrder'] ?? 'desc',
+                    'limit'     => $params['limit'] ?? 50,
+                    'cursor'    => $params['cursor'] ?? null,
+                    'accountId' => $params['accountId'] ?? null,
+                ])
+            );
+            $this->throwIfFailed($response, 'getInboxConversations');
+            return $response->json();
+        }, 'getInboxConversations');
+    }
+
+    /**
+     * Get messages from a specific conversation.
+     *
+     * GET /v1/inbox/conversations/{conversationId}/messages?accountId=...
+     *
+     * @param  string $conversationId  Platform-specific conversation ID
+     * @param  string $accountId       Zernio social account ID (required)
+     */
+    public function getConversationMessages(string $conversationId, string $accountId): array
+    {
+        return $this->executeWithRetry(function () use ($conversationId, $accountId) {
+            $response = $this->client()->get(
+                $this->url("v1/inbox/conversations/{$conversationId}/messages"),
+                ['accountId' => $accountId]
+            );
+            $this->throwIfFailed($response, 'getConversationMessages');
+            return $response->json();
+        }, 'getConversationMessages');
+    }
+
+    /**
+     * Send a message (reply) to a conversation.
+     *
+     * POST /v1/inbox/conversations/{conversationId}/messages
+     *
+     * @param  string $conversationId  Platform-specific conversation ID
+     * @param  string $accountId       Zernio social account ID (required)
+     * @param  string $message         Message text
+     */
+    public function sendConversationMessage(string $conversationId, string $accountId, string $message): array
+    {
+        return $this->executeWithRetry(function () use ($conversationId, $accountId, $message) {
+            $response = $this->client()->post(
+                $this->url("v1/inbox/conversations/{$conversationId}/messages"),
+                [
+                    'accountId' => $accountId,
+                    'message'   => $message,
+                ]
+            );
+            $this->throwIfFailed($response, 'sendConversationMessage');
+            return $response->json();
+        }, 'sendConversationMessage');
+    }
+
+    /**
+     * Mark a conversation as read.
+     *
+     * POST /v1/inbox/conversations/{conversationId}/read
+     *
+     * @param  string $conversationId  Platform-specific conversation ID
+     * @param  string $accountId       Zernio social account ID (required)
+     */
+    public function markConversationAsRead(string $conversationId, string $accountId): array
+    {
+        return $this->executeWithRetry(function () use ($conversationId, $accountId) {
+            $response = $this->client()->post(
+                $this->url("v1/inbox/conversations/{$conversationId}/read"),
+                ['accountId' => $accountId]
+            );
+            $this->throwIfFailed($response, 'markConversationAsRead');
+            return $response->json();
+        }, 'markConversationAsRead');
+    }
+
+    /**
+     * Reply to an inbox message (legacy).
+     *
+     * @deprecated Use sendConversationMessage() instead.
      */
     public function replyToMessage(string $profileId, string $messageId, string $message): array
     {
@@ -406,47 +518,4 @@ class ZernioService
             );
         }
     }
-
-    public function getInboxConversations(array $params = []): array
-    {
-        return $this->executeWithRetry(function () use ($params) {
-
-            $response = $this->client()->get(
-                $this->url('v1/inbox/conversations'),
-                array_filter([
-                    'profileId' => $params['profileId'] ?? null,
-                    'platform'  => $params['platform'] ?? null,
-                    'status'    => $params['status'] ?? 'active',
-                    'sortOrder' => $params['sortOrder'] ?? 'desc',
-                    'limit'     => $params['limit'] ?? 50,
-                    'cursor'    => $params['cursor'] ?? null,
-                    'accountId' => $params['accountId'] ?? null,
-                ])
-            );
-
-            $this->throwIfFailed($response, 'getInboxConversations');
-
-            return $response->json();
-        }, 'getInboxConversations');
-    }
-
-
-  
-public function getConversationMessages(string $conversationId): array
-{
-    return $this->executeWithRetry(function () use ($conversationId) {
-
-        $response = $this->client()->get(
-            $this->url("v1/inbox/conversations/{$conversationId}")
-        );
-
-        $this->throwIfFailed(
-            $response,
-            'getConversationMessages'
-        );
-
-        return $response->json();
-
-    }, 'getConversationMessages');
-}
 }

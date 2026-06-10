@@ -92,9 +92,10 @@ class InboxController extends Controller
 
     try {
 
-        $zernio = app(\App\Services\ZernioService::class);
+        $zernio = \App\Services\ZernioService::forTenant($tenant);
 
         $params = [
+            'profileId' => $tenant->zernio_profile_id,
             'limit'     => 50,
             'sortOrder' => $sort === 'oldest'
                 ? 'asc'
@@ -179,33 +180,114 @@ class InboxController extends Controller
     ]);
 }
 
+    // -------------------------------------------------------------------------
+    //  JSON endpoint for polling — returns conversations + stats
+    // -------------------------------------------------------------------------
 
+    public function conversationsJson(Request $request)
+    {
+        $tenant = Auth::user()->tenant;
 
-public function conversationMessages(string $id)
-{
-    try {
+        $conversations = collect();
 
-        $zernio = app(\App\Services\ZernioService::class);
+        try {
+            $zernio = \App\Services\ZernioService::forTenant($tenant);
 
-        $response = $zernio->getConversationMessages($id);
+            $params = [
+                'profileId' => $tenant->zernio_profile_id,
+                'limit'     => 50,
+                'sortOrder' => 'desc',
+            ];
+
+            $response = $zernio->getInboxConversations($params);
+            $conversations = collect($response['data'] ?? [])
+                ->sortByDesc('updatedTime')
+                ->values();
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ]);
+        }
+
+        $stats = [
+            'total_messages'  => $conversations->count(),
+            'unread_messages' => $conversations->filter(fn ($m) => ($m['unreadCount'] ?? 0) > 0)->count(),
+        ];
+
+        return response()->json([
+            'success'       => true,
+            'conversations' => $conversations,
+            'stats'         => $stats,
+        ]);
+    }
+
+    // -------------------------------------------------------------------------
+    //  Real-time events endpoint — returns new events and deletes them
+    // -------------------------------------------------------------------------
+
+    public function inboxEvents(Request $request)
+    {
+        $tenant = Auth::user()->tenant;
+        $since  = $request->query('since');
+
+        $query = \App\Models\InboxEvent::where('tenant_id', $tenant->id);
+
+        if ($since) {
+            $query->where('created_at', '>', $since);
+        }
+
+        $events = $query->orderBy('created_at')->limit(50)->get();
+
+        // Delete consumed events (older than 30 seconds to avoid race conditions)
+        \App\Models\InboxEvent::where('tenant_id', $tenant->id)
+            ->where('created_at', '<', now()->subSeconds(30))
+            ->delete();
 
         return response()->json([
             'success' => true,
-            'data' => $response['data']
-                ?? $response['messages']
-                ?? [],
+            'events'  => $events->map(fn ($e) => [
+                'type'      => $e->event_type,
+                'payload'   => $e->payload,
+                'timestamp' => $e->created_at->toIso8601String(),
+            ]),
+            'server_time' => now()->toIso8601String(),
+        ]);
+    }
+
+
+
+public function conversationMessages(Request $request, string $id)
+{
+    try {
+        $tenant    = Auth::user()->tenant;
+        $accountId = $request->query('accountId');
+
+        if (!$accountId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'accountId is required',
+            ], 400);
+        }
+
+        $zernio = \App\Services\ZernioService::forTenant($tenant);
+        $response = $zernio->getConversationMessages($id, $accountId);
+
+        return response()->json([
+            'success' => true,
+            'data' => $response['messages'] ?? $response['data'] ?? [],
         ]);
 
     } catch (\Throwable $e) {
-
         \Log::error('Failed get conversation messages', [
             'conversation_id' => $id,
-            'message' => $e->getMessage(),
+            'account_id'      => $request->query('accountId'),
+            'message'         => $e->getMessage(),
         ]);
 
         return response()->json([
             'success' => false,
-            'message' => 'Failed load messages',
+            'message' => 'Failed load messages: ' . $e->getMessage(),
         ], 500);
     }
 }
@@ -305,5 +387,73 @@ public function conversationMessages(string $id)
         $message->update(['is_read' => 1]);
 
         return back()->with('success', 'Pesan ditandai sudah dibaca.');
+    }
+
+    // -------------------------------------------------------------------------
+    //  Send reply to a Zernio conversation
+    // -------------------------------------------------------------------------
+
+    public function sendConversationReply(Request $request, string $conversationId)
+    {
+        $request->validate([
+            'message'   => ['required', 'string', 'max:2200'],
+            'accountId' => ['required', 'string'],
+        ]);
+
+        $tenant = Auth::user()->tenant;
+
+        try {
+            $zernio = \App\Services\ZernioService::forTenant($tenant);
+            $result = $zernio->sendConversationMessage(
+                $conversationId,
+                $request->accountId,
+                $request->message
+            );
+
+            return response()->json([
+                'success' => true,
+                'data'    => $result['data'] ?? null,
+                'message' => 'Pesan berhasil dikirim.',
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('Failed to send conversation reply', [
+                'conversation_id' => $conversationId,
+                'account_id'      => $request->accountId,
+                'message'         => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal mengirim pesan: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    //  Mark a Zernio conversation as read
+    // -------------------------------------------------------------------------
+
+    public function markConversationRead(Request $request, string $conversationId)
+    {
+        $request->validate([
+            'accountId' => ['required', 'string'],
+        ]);
+
+        $tenant = Auth::user()->tenant;
+
+        try {
+            $zernio = \App\Services\ZernioService::forTenant($tenant);
+            $zernio->markConversationAsRead($conversationId, $request->accountId);
+
+            return response()->json(['success' => true]);
+        } catch (\Throwable $e) {
+            \Log::warning('Failed to mark conversation as read', [
+                'conversation_id' => $conversationId,
+                'message'         => $e->getMessage(),
+            ]);
+
+            // Still return success — marking as read is non-critical
+            return response()->json(['success' => true]);
+        }
     }
 }

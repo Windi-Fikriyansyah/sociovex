@@ -98,4 +98,26 @@ class Tenant extends Model
     {
         return $this->hasMany(ZernioApiKey::class);
     }
+
+    /**
+     * Get the next available API key that has fewer than $maxConnections social accounts.
+     * Returns null if all keys are at capacity.
+     */
+    public function getNextAvailableApiKey(int $maxConnections = 2): ?ZernioApiKey
+    {
+        $keys = $this->zernioApiKeys()->where('is_active', true)->get();
+
+        foreach ($keys as $key) {
+            $connectionCount = SocialAccount::where('tenant_id', $this->id)
+                ->where('zernio_api_key_id', $key->id)
+                ->where('status', 'active')
+                ->count();
+
+            if ($connectionCount < $maxConnections) {
+                return $key;
+            }
+        }
+
+        return null;
+    }
 }

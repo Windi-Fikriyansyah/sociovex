@@ -12,7 +12,7 @@ class SyncZernioProfiles extends Command
     protected $signature   = 'zernio:sync-profiles {--force : Buat ulang profile meskipun sudah ada}';
     protected $description = 'Buat Zernio profile untuk semua tenant yang belum punya zernio_profile_id';
 
-    public function __construct(private ZernioService $zernio)
+    public function __construct()
     {
         parent::__construct();
     }
@@ -36,10 +36,24 @@ class SyncZernioProfiles extends Command
 
         $success = 0;
         $failed  = 0;
+        $skipped = 0;
 
         foreach ($tenants as $tenant) {
+            // Each tenant needs at least one API key to create a profile
+            $firstKey = $tenant->zernioApiKeys()->where('is_active', true)->first();
+
+            if (!$firstKey) {
+                $this->newLine();
+                $this->warn("Tenant #{$tenant->id} ({$tenant->business_name}): No API key configured, skipping.");
+                $skipped++;
+                $bar->advance();
+                continue;
+            }
+
+            $zernio = new ZernioService($firstKey->api_key);
+
             try {
-                $result    = $this->zernio->createProfile($tenant->business_name . '_' . \Illuminate\Support\Str::random(6));
+                $result    = $zernio->createProfile($tenant->business_name . '_' . \Illuminate\Support\Str::random(6));
                 $profileId = $result['profile']['_id'] ?? null;
 
                 if (!$profileId) {
@@ -50,7 +64,7 @@ class SyncZernioProfiles extends Command
 
                 // Register webhook for all relevant events
                 try {
-                    $this->zernio->registerWebhook(
+                    $zernio->registerWebhook(
                         $profileId,
                         route('webhook.zernio'),
                         ['new_message', 'new_comment', 'post_published', 'post_failed']
@@ -72,7 +86,7 @@ class SyncZernioProfiles extends Command
 
         $bar->finish();
         $this->newLine(2);
-        $this->info("Selesai. Berhasil: {$success} | Gagal: {$failed}");
+        $this->info("Selesai. Berhasil: {$success} | Gagal: {$failed} | Dilewati (tanpa API key): {$skipped}");
 
         return $failed > 0 ? self::FAILURE : self::SUCCESS;
     }

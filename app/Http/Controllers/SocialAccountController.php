@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\ActivityLog;
 use App\Models\SocialAccount;
 use App\Models\User;
+use App\Models\ZernioApiKey;
 use App\Services\ZernioService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -15,8 +16,6 @@ use RuntimeException;
 
 class SocialAccountController extends Controller
 {
-    public function __construct(private ZernioService $zernio) {}
-
     // -------------------------------------------------------------------------
     //  List
     // -------------------------------------------------------------------------
@@ -25,6 +24,7 @@ class SocialAccountController extends Controller
     {
         $tenant   = Auth::user()->tenant;
         $accounts = SocialAccount::where('tenant_id', $tenant->id)
+            ->with('zernioApiKey')
             ->orderByDesc('created_at')
             ->get();
 
@@ -57,19 +57,29 @@ class SocialAccountController extends Controller
             return back()->with('error', 'Batas akun sosial media untuk paket Anda sudah tercapai. Upgrade paket untuk menambah lebih banyak akun.');
         }
 
+        // --- Find an available API key (max 2 connections per key) ---
+        $apiKey = $tenant->getNextAvailableApiKey(2);
+
+        if (!$apiKey) {
+            return back()->with('error', 'Semua API Key Zernio sudah mencapai batas maksimal 2 koneksi per key. Tambahkan API Key baru di Pengaturan Akun.');
+        }
+
+        // Create a ZernioService instance configured with this key
+        $zernio = new ZernioService($apiKey->api_key);
+
         try {
             // --- 1. Ensure Zernio profile exists ---
             if (empty($tenant->zernio_profile_id)) {
-                $profileName = $tenant->business_name . '_' . \Illuminate\Support\Str::random(6);
-                $result      = $this->zernio->createProfile($profileName);
+                $profileName = $tenant->business_name . '_' . Str::random(6);
+                $result      = $zernio->createProfile($profileName);
                 $profileId   = $result['profile']['_id'];
 
                 $tenant->update(['zernio_profile_id' => $profileId]);
-                Log::info("Zernio profile created for tenant {$tenant->id}", ['profile_id' => $profileId]);
+                Log::info("Zernio profile created for tenant {$tenant->id}", ['profile_id' => $profileId, 'api_key_id' => $apiKey->id]);
 
                 // Register webhook (non-fatal)
                 try {
-                    $this->zernio->registerWebhook(
+                    $zernio->registerWebhook(
                         $profileId,
                         route('webhook.zernio'),
                         ['new_message', 'new_comment', 'post_published', 'post_failed']
@@ -80,11 +90,13 @@ class SocialAccountController extends Controller
             }
 
             // --- 2. Build callback URL with a short-lived token (30 min) ---
-            // We store uid→token in cache so the callback can identify the user
-            // without relying on session cookies or signed URLs (which break with
-            // dynamic ngrok/proxy URLs where APP_URL changes between requests).
+            // We store the token with both user ID and API key ID so the callback
+            // can identify which key was used for this connection.
             $token = Str::random(40);
-            Cache::put("oauth_token:{$token}", $user->id, now()->addMinutes(30));
+            Cache::put("oauth_token:{$token}", [
+                'user_id'           => $user->id,
+                'zernio_api_key_id' => $apiKey->id,
+            ], now()->addMinutes(30));
 
             $callbackUrl = route('social-accounts.oauth-callback', [
                 'platform' => $platform,
@@ -92,7 +104,7 @@ class SocialAccountController extends Controller
             ]);
 
             // --- 3. Get Zernio OAuth URL ---
-            $result  = $this->zernio->getConnectUrl($platform, $tenant->zernio_profile_id, $callbackUrl);
+            $result  = $zernio->getConnectUrl($platform, $tenant->zernio_profile_id, $callbackUrl);
             $authUrl = $result['authUrl'] ?? null;
 
             if (!$authUrl) {
@@ -108,22 +120,27 @@ class SocialAccountController extends Controller
     }
 
     // -------------------------------------------------------------------------
-    //  OAuth callback (GET) — outside auth middleware, uses signed URL
-    //  GET /social-accounts/oauth-callback/{platform}?uid={userId}&signature=...
-    //
-    //  Zernio appends its own query params after our callback URL, e.g.:
-    //    ?uid=4&...signature...&accountId=acc_xxx&connected=instagram
+    //  OAuth callback (GET) — outside auth middleware
     // -------------------------------------------------------------------------
 
     public function callback(Request $request, string $platform)
     {
-        // Resolve the user from the cache token (set during connect, valid 30 min).
-        // This approach works regardless of APP_URL / ngrok URL changes.
-        $token  = $request->query('token');
-        $userId = $token ? Cache::pull("oauth_token:{$token}") : null;
+        // Resolve the user + api key from cache token
+        $token     = $request->query('token');
+        $tokenData = $token ? Cache::pull("oauth_token:{$token}") : null;
+
+        $userId       = null;
+        $apiKeyIdFromToken = null;
+
+        if (is_array($tokenData)) {
+            $userId       = $tokenData['user_id'] ?? null;
+            $apiKeyIdFromToken = $tokenData['zernio_api_key_id'] ?? null;
+        } elseif ($tokenData) {
+            // Legacy: token stored just the user ID
+            $userId = $tokenData;
+        }
 
         if (!$userId) {
-            // Fallback: try the legacy uid param (in case of old links in flight)
             $userId = $request->query('uid');
         }
 
@@ -134,7 +151,6 @@ class SocialAccountController extends Controller
                 ->with('error', 'Sesi OAuth tidak valid atau sudah kedaluwarsa. Silakan coba hubungkan akun lagi.');
         }
 
-        // Log the user in for this request so redirects work naturally
         Auth::login($user);
 
         $tenant = $user->tenant;
@@ -144,12 +160,20 @@ class SocialAccountController extends Controller
                 ->with('error', 'Otorisasi ditolak: ' . $request->query('error'));
         }
 
+        // Resolve which API key to use
+        $apiKey = $apiKeyIdFromToken
+            ? ZernioApiKey::find($apiKeyIdFromToken)
+            : $tenant->zernioApiKeys()->where('is_active', true)->first();
+
+        $zernio = $apiKey
+            ? new ZernioService($apiKey->api_key)
+            : new ZernioService();
+
         // Zernio may return accountId directly in query params
         $accountId = $request->query('accountId');
 
         if (!$accountId || !$tenant->zernio_profile_id) {
-            // Try syncing all platforms from Zernio to find the newly added one
-            return $this->syncAndRedirect($tenant, $platform, $request);
+            return $this->syncAndRedirect($tenant, $platform, $request, $zernio, $apiKey);
         }
 
         // Fetch the real account details from Zernio
@@ -157,7 +181,7 @@ class SocialAccountController extends Controller
         $profilePicture = null;
 
         try {
-            $accountData    = $this->zernio->getAccount($tenant->zernio_profile_id, $accountId);
+            $accountData    = $zernio->getAccount($tenant->zernio_profile_id, $accountId);
             $acc            = $accountData['account'] ?? [];
             $username       = $acc['username'] ?? $request->query('username');
             $profilePicture = $acc['profilePicture'] ?? null;
@@ -173,11 +197,12 @@ class SocialAccountController extends Controller
 
         if ($existing) {
             $existing->update([
-                'status'          => 'active',
-                'connected_at'    => now(),
-                'username'        => $username ?? $existing->username,
-                'profile_name'    => $username ?? $existing->profile_name,
-                'avatar'          => $profilePicture ?? $existing->avatar,
+                'status'              => 'active',
+                'connected_at'        => now(),
+                'username'            => $username ?? $existing->username,
+                'profile_name'        => $username ?? $existing->profile_name,
+                'avatar'              => $profilePicture ?? $existing->avatar,
+                'zernio_api_key_id'   => $apiKey?->id ?? $existing->zernio_api_key_id,
             ]);
 
             return redirect()->route('social-accounts.index')
@@ -185,21 +210,23 @@ class SocialAccountController extends Controller
         }
 
         $account = SocialAccount::create([
-            'tenant_id'         => $tenant->id,
-            'zernio_account_id' => $accountId,
-            'platform'          => $platform,
-            'username'          => $username,
-            'profile_name'      => $username,
-            'avatar'            => $profilePicture,
-            'connected_at'      => now(),
-            'status'            => 'active',
+            'tenant_id'          => $tenant->id,
+            'zernio_api_key_id'  => $apiKey?->id,
+            'zernio_account_id'  => $accountId,
+            'platform'           => $platform,
+            'username'           => $username,
+            'profile_name'       => $username,
+            'avatar'             => $profilePicture,
+            'connected_at'       => now(),
+            'status'             => 'active',
         ]);
 
         ActivityLog::create([
             'tenant_id'   => $tenant->id,
             'user_id'     => $user->id,
             'activity'    => 'connect_social_account',
-            'description' => "Akun {$platform} (@{$account->username}) berhasil dihubungkan",
+            'description' => "Akun {$platform} (@{$account->username}) berhasil dihubungkan" .
+                             ($apiKey ? " menggunakan API Key: {$apiKey->label}" : ''),
             'ip_address'  => $request->ip(),
         ]);
 
@@ -208,13 +235,13 @@ class SocialAccountController extends Controller
     }
 
     // -------------------------------------------------------------------------
-    //  Sync all platforms from Zernio then redirect (fallback when no accountId)
+    //  Sync all platforms from Zernio (fallback when no accountId)
     // -------------------------------------------------------------------------
 
-    private function syncAndRedirect($tenant, string $platform, Request $request)
+    private function syncAndRedirect($tenant, string $platform, Request $request, ZernioService $zernio, ?ZernioApiKey $apiKey)
     {
         try {
-            $result    = $this->zernio->getPlatforms($tenant->zernio_profile_id);
+            $result    = $zernio->getPlatforms($tenant->zernio_profile_id);
             $platforms = $result['platforms'] ?? [];
 
             $synced = 0;
@@ -222,12 +249,13 @@ class SocialAccountController extends Controller
                 SocialAccount::updateOrCreate(
                     ['tenant_id' => $tenant->id, 'zernio_account_id' => $acc['_id']],
                     [
-                        'platform'      => $acc['platform'],
-                        'username'      => $acc['username']      ?? null,
-                        'profile_name'  => $acc['username']      ?? null,
-                        'avatar'        => $acc['profilePicture'] ?? null,
-                        'connected_at'  => now(),
-                        'status'        => 'active',
+                        'platform'           => $acc['platform'],
+                        'username'           => $acc['username']      ?? null,
+                        'profile_name'       => $acc['username']      ?? null,
+                        'avatar'             => $acc['profilePicture'] ?? null,
+                        'connected_at'       => now(),
+                        'status'             => 'active',
+                        'zernio_api_key_id'  => $apiKey?->id,
                     ]
                 );
                 $synced++;
@@ -256,7 +284,12 @@ class SocialAccountController extends Controller
 
         if ($socialAccount->zernio_account_id) {
             try {
-                $this->zernio->deleteAccount($socialAccount->zernio_account_id);
+                // Use the API key that was used to connect this account
+                $zernio = $socialAccount->zernioApiKey
+                    ? new ZernioService($socialAccount->zernioApiKey->api_key)
+                    : ZernioService::forTenant($tenant);
+
+                $zernio->deleteAccount($socialAccount->zernio_account_id);
             } catch (RuntimeException $e) {
                 Log::warning("Zernio disconnect failed for account {$socialAccount->id}: {$e->getMessage()}");
             }
@@ -289,7 +322,11 @@ class SocialAccountController extends Controller
 
         if ($socialAccount->zernio_account_id) {
             try {
-                $this->zernio->deleteAccount($socialAccount->zernio_account_id);
+                $zernio = $socialAccount->zernioApiKey
+                    ? new ZernioService($socialAccount->zernioApiKey->api_key)
+                    : ZernioService::forTenant($tenant);
+
+                $zernio->deleteAccount($socialAccount->zernio_account_id);
             } catch (RuntimeException $e) {
                 Log::warning("Zernio delete failed for account {$socialAccount->id}: {$e->getMessage()}");
             }

@@ -28,7 +28,7 @@ class ProfileController extends Controller
         return view('profile.edit', [
             'user'          => $user,
             'tenant'        => $tenant,
-            'webhookUrl'    => url('/webhook/zernio'),
+            'webhookUrl'    => rtrim(config('app.url'), '/') . '/webhook/zernio',
             'zernioApiKeys' => $zernioApiKeys,
         ]);
     }

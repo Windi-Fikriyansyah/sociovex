@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class SocialAccount extends Model
 {
     protected $fillable = [
-        'tenant_id', 'zernio_account_id', 'platform', 'username',
+        'tenant_id', 'zernio_api_key_id', 'zernio_account_id', 'platform', 'username',
         'profile_name', 'avatar', 'access_token', 'refresh_token',
         'connected_at', 'status',
     ];
@@ -23,6 +23,11 @@ class SocialAccount extends Model
     public function tenant(): BelongsTo
     {
         return $this->belongsTo(Tenant::class);
+    }
+
+    public function zernioApiKey(): BelongsTo
+    {
+        return $this->belongsTo(ZernioApiKey::class);
     }
 
     public function posts(): HasMany

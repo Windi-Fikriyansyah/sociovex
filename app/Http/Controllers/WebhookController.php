@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\AiSetting;
 use App\Models\Comment;
 use App\Models\CommentReply;
+use App\Models\InboxEvent;
 use App\Models\InboxMessage;
 use App\Models\KnowledgeBase;
 use App\Models\Post;
@@ -72,23 +73,41 @@ class WebhookController extends Controller
 
     private function verifySignature(Request $request): bool
     {
-        $secret = config('services.zernio.webhook_secret');
-
-        // If no secret is configured, skip verification (dev mode)
-        if (empty($secret)) {
-            return true;
-        }
-
         $signature = $request->header('X-Zernio-Signature')
             ?? $request->header('X-Webhook-Signature');
 
         if (!$signature) {
-            return false;
+            // If no signature header, check global config (dev fallback)
+            $globalSecret = config('services.zernio.webhook_secret');
+            return empty($globalSecret); // pass only if no secret configured
         }
 
-        $expected = 'sha256=' . hash_hmac('sha256', $request->getContent(), $secret);
+        // Try each tenant's webhook_secret first, then fall back to global config
+        $secrets = \App\Models\ZernioApiKey::whereNotNull('webhook_secret')
+            ->where('webhook_secret', '!=', '')
+            ->pluck('webhook_secret')
+            ->toArray();
 
-        return hash_equals($expected, $signature);
+        // Also check global config as fallback
+        $globalSecret = config('services.zernio.webhook_secret');
+        if ($globalSecret) {
+            $secrets[] = $globalSecret;
+        }
+
+        if (empty($secrets)) {
+            return true; // No secrets configured anywhere, skip verification
+        }
+
+        $content = $request->getContent();
+
+        foreach ($secrets as $secret) {
+            $expected = 'sha256=' . hash_hmac('sha256', $content, $secret);
+            if (hash_equals($expected, $signature)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // -------------------------------------------------------------------------
@@ -128,6 +147,18 @@ class WebhookController extends Controller
         if ($aiSetting) {
             $this->autoReplyWithAi($comment, $aiSetting);
         }
+
+        // Fire real-time event for frontend
+        InboxEvent::create([
+            'tenant_id'  => $socialAccount->tenant_id,
+            'event_type' => 'new_comment',
+            'payload'    => [
+                'account_id' => $zernioAccountId,
+                'username'   => $payload['username'] ?? 'Unknown',
+                'text'       => $payload['text'] ?? '',
+                'platform'   => $socialAccount->platform,
+            ],
+        ]);
     }
 
     private function handleNewMessage(array $payload): void
@@ -153,6 +184,19 @@ class WebhookController extends Controller
             'type'              => 'dm',
             'is_read'           => 0,
             'received_at'       => now(),
+        ]);
+
+        // Fire real-time event for frontend
+        InboxEvent::create([
+            'tenant_id'  => $socialAccount->tenant_id,
+            'event_type' => 'new_message',
+            'payload'    => [
+                'account_id'      => $zernioAccountId,
+                'conversation_id' => $payload['conversation_id'] ?? null,
+                'sender_name'     => $payload['sender_name'] ?? 'Unknown',
+                'text'            => $payload['text'] ?? '',
+                'platform'        => $socialAccount->platform,
+            ],
         ]);
     }
 
