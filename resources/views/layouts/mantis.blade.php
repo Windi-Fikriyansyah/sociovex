@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <title>@yield('title', 'SocialPilot AI') - SocialPilot AI</title>
     <meta charset="utf-8">
@@ -9,12 +10,16 @@
 
     <link rel="icon" href="{{ asset('images/logo/logo-icon.svg') }}" type="image/x-icon">
 
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600;700&display=swap" id="main-font-link">
-    <link rel="stylesheet" href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/fonts/tabler-icons.min.css') }}">
+    <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600;700&display=swap"
+        id="main-font-link">
+    <link rel="stylesheet"
+        href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/fonts/tabler-icons.min.css') }}">
     <link rel="stylesheet" href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/fonts/feather.css') }}">
     <link rel="stylesheet" href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/fonts/fontawesome.css') }}">
     <link rel="stylesheet" href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/fonts/material.css') }}">
-    <link rel="stylesheet" href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/css/style.css') }}" id="main-style-link">
+    <link rel="stylesheet" href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/css/style.css') }}"
+        id="main-style-link">
     <link rel="stylesheet" href="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/css/style-preset.css') }}">
 
     <style>
@@ -27,15 +32,53 @@
             font-size: 11px;
             font-weight: 600;
         }
-        .platform-instagram { background: linear-gradient(135deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888); color: #fff; }
-        .platform-facebook  { background: #1877F2; color: #fff; }
-        .platform-linkedin  { background: #0A66C2; color: #fff; }
-        .platform-tiktok    { background: #000; color: #fff; }
-        .platform-threads   { background: #000; color: #fff; }
-        .platform-x, .platform-twitter { background: #1DA1F2; color: #fff; }
-        .platform-youtube   { background: #FF0000; color: #fff; }
-        .sidebar-brand-text { font-size: 18px; font-weight: 700; color: #4680ff; letter-spacing: -0.5px; }
-        .sidebar-brand-text span { color: #333; }
+
+        .platform-instagram {
+            background: linear-gradient(135deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+            color: #fff;
+        }
+
+        .platform-facebook {
+            background: #1877F2;
+            color: #fff;
+        }
+
+        .platform-linkedin {
+            background: #0A66C2;
+            color: #fff;
+        }
+
+        .platform-tiktok {
+            background: #000;
+            color: #fff;
+        }
+
+        .platform-threads {
+            background: #000;
+            color: #fff;
+        }
+
+        .platform-x,
+        .platform-twitter {
+            background: #1DA1F2;
+            color: #fff;
+        }
+
+        .platform-youtube {
+            background: #FF0000;
+            color: #fff;
+        }
+
+        .sidebar-brand-text {
+            font-size: 18px;
+            font-weight: 700;
+            color: #4680ff;
+            letter-spacing: -0.5px;
+        }
+
+        .sidebar-brand-text span {
+            color: #333;
+        }
     </style>
 
     @stack('styles')
@@ -62,7 +105,7 @@
 
                     <li class="pc-item {{ request()->routeIs('dashboard') ? 'active' : '' }}">
                         <a href="{{ route('dashboard') }}" class="pc-link">
-                            <span class="pc-micon"><i class="ti ti-layout-dashboard"></i></span>
+                            <span class="pc-micon"><i class="ti ti-home-2" style="font-size: 18px;"></i></span>
                             <span class="pc-mtext">Dashboard</span>
                         </a>
                     </li>
@@ -73,7 +116,7 @@
 
                     <li class="pc-item {{ request()->routeIs('posts.*') ? 'active' : '' }}">
                         <a href="{{ route('posts.create') }}" class="pc-link">
-                            <span class="pc-micon"><i class="ti ti-pencil-plus"></i></span>
+                            <span class="pc-micon"><i class="ti ti-square-plus" style="font-size: 18px;"></i></span>
                             <span class="pc-mtext">Buat Post</span>
                         </a>
                     </li>
@@ -96,26 +139,74 @@
                         <label>Interaksi</label>
                     </li>
 
-                    <li class="pc-item {{ request()->routeIs('inbox.*') ? 'active' : '' }}">
-                        <a href="{{ route('inbox.index') }}" class="pc-link">
-                            <span class="pc-micon"><i class="ti ti-inbox"></i></span>
+                    <li class="pc-item pc-hasmenu {{ request()->routeIs('inbox.*') ? 'active' : '' }}">
+                        <a href="#!" class="pc-link">
+                            <span class="pc-micon"><i class="ti ti-inbox" style="font-size: 18px;"></i></span>
                             <span class="pc-mtext">Inbox</span>
+                            <span class="pc-arrow"><i data-feather="chevron-right"></i></span>
                             @php
                                 $unreadCount = 0;
-                                if(Auth::user()?->tenant_id) {
-                                    $unreadCount = \App\Models\Comment::where('tenant_id', Auth::user()->tenant_id)->where('is_replied', 0)->count()
-                                        + \App\Models\InboxMessage::where('tenant_id', Auth::user()->tenant_id)->where('is_read', 0)->count();
+                                if (Auth::user()?->tenant_id) {
+                                    $unreadCount =
+                                        \App\Models\Comment::where('tenant_id', Auth::user()->tenant_id)
+                                            ->where('is_replied', 0)
+                                            ->count() +
+                                        \App\Models\InboxMessage::where('tenant_id', Auth::user()->tenant_id)
+                                            ->where('is_read', 0)
+                                            ->count();
                                 }
                             @endphp
-                            @if($unreadCount > 0)
+                            @if ($unreadCount > 0)
                                 <span class="badge bg-danger ms-auto">{{ $unreadCount }}</span>
                             @endif
                         </a>
+                        <ul class="pc-submenu">
+                            <li class="pc-item {{ request()->routeIs('inbox.messages') ? 'active' : '' }}">
+                                <a class="pc-link" href="{{ route('inbox.messages') }}">
+                                    <span class="pc-mtext">Messages</span>
+                                    @php
+                                        $unreadMessages = 0;
+                                        if (Auth::user()?->tenant_id) {
+                                            $unreadMessages = \App\Models\InboxMessage::where(
+                                                'tenant_id',
+                                                Auth::user()->tenant_id,
+                                            )
+                                                ->where('is_read', 0)
+                                                ->count();
+                                        }
+                                    @endphp
+                                    @if ($unreadMessages > 0)
+                                        <span class="badge bg-danger ms-auto"
+                                            style="font-size: 10px;">{{ $unreadMessages }}</span>
+                                    @endif
+                                </a>
+                            </li>
+                            <li class="pc-item {{ request()->routeIs('inbox.comments') ? 'active' : '' }}">
+                                <a class="pc-link" href="{{ route('inbox.comments') }}">
+                                    <span class="pc-mtext">Comments</span>
+                                    @php
+                                        $unrepliedComments = 0;
+                                        if (Auth::user()?->tenant_id) {
+                                            $unrepliedComments = \App\Models\Comment::where(
+                                                'tenant_id',
+                                                Auth::user()->tenant_id,
+                                            )
+                                                ->where('is_replied', 0)
+                                                ->count();
+                                        }
+                                    @endphp
+                                    @if ($unrepliedComments > 0)
+                                        <span class="badge bg-warning ms-auto"
+                                            style="font-size: 10px;">{{ $unrepliedComments }}</span>
+                                    @endif
+                                </a>
+                            </li>
+                        </ul>
                     </li>
 
                     <li class="pc-item {{ request()->routeIs('ai.*') ? 'active' : '' }}">
                         <a href="{{ route('ai.settings') }}" class="pc-link">
-                            <span class="pc-micon"><i class="ti ti-robot"></i></span>
+                            <span class="pc-micon"><i class="ti ti-robot-face" style="font-size: 18px;"></i></span>
                             <span class="pc-mtext">AI Auto Reply</span>
                         </a>
                     </li>
@@ -133,7 +224,7 @@
 
                     <li class="pc-item {{ request()->routeIs('social-accounts.*') ? 'active' : '' }}">
                         <a href="{{ route('social-accounts.index') }}" class="pc-link">
-                            <span class="pc-micon"><i class="ti ti-plug-connected"></i></span>
+                            <span class="pc-micon"><i class="ti ti-link-off" style="font-size: 18px;"></i></span>
                             <span class="pc-mtext">Akun Sosial Media</span>
                         </a>
                     </li>
@@ -149,7 +240,7 @@
                         </a>
                     </li>
 
-                    <li class="pc-item">
+                    <li class="pc-item {{ request()->routeIs('profile.*') ? 'active' : '' }}">
                         <a href="{{ route('profile.edit') }}" class="pc-link">
                             <span class="pc-micon"><i class="ti ti-settings"></i></span>
                             <span class="pc-mtext">Pengaturan Akun</span>
@@ -160,7 +251,8 @@
                         <form method="POST" action="{{ route('logout') }}" id="logout-form-sidebar">
                             @csrf
                         </form>
-                        <a href="#" class="pc-link" onclick="document.getElementById('logout-form-sidebar').submit()">
+                        <a href="#" class="pc-link"
+                            onclick="document.getElementById('logout-form-sidebar').submit()">
                             <span class="pc-micon"><i class="ti ti-logout"></i></span>
                             <span class="pc-mtext">Logout</span>
                         </a>
@@ -200,8 +292,9 @@
                     </li>
                     <!-- User profile -->
                     <li class="dropdown pc-h-item header-user-profile">
-                        <a class="pc-head-link dropdown-toggle arrow-none me-0" data-bs-toggle="dropdown" href="#"
-                            role="button" aria-haspopup="false" data-bs-auto-close="outside" aria-expanded="false">
+                        <a class="pc-head-link dropdown-toggle arrow-none me-0" data-bs-toggle="dropdown"
+                            href="#" role="button" aria-haspopup="false" data-bs-auto-close="outside"
+                            aria-expanded="false">
                             <img src="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/images/user/avatar-2.jpg') }}"
                                 alt="user-image" class="user-avtar">
                             <span>{{ Auth::user()->name }}</span>
@@ -264,26 +357,26 @@
             </div>
 
             <!-- Alert messages -->
-            @if(session('success'))
+            @if (session('success'))
                 <div class="alert alert-success alert-dismissible fade show" role="alert">
                     <i class="ti ti-circle-check me-2"></i>{{ session('success') }}
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             @endif
 
-            @if(session('error'))
+            @if (session('error'))
                 <div class="alert alert-danger alert-dismissible fade show" role="alert">
                     <i class="ti ti-alert-circle me-2"></i>{{ session('error') }}
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
             @endif
 
-            @if($errors->any())
+            @if ($errors->any())
                 <div class="alert alert-danger alert-dismissible fade show" role="alert">
                     <i class="ti ti-alert-circle me-2"></i>
                     <strong>Terjadi Kesalahan:</strong>
                     <ul class="mb-0 mt-1">
-                        @foreach($errors->all() as $error)
+                        @foreach ($errors->all() as $error)
                             <li>{{ $error }}</li>
                         @endforeach
                     </ul>
@@ -299,7 +392,8 @@
         <div class="footer-wrapper container-fluid">
             <div class="row">
                 <div class="col-sm my-1">
-                    <p class="m-0">SocialPilot AI &copy; {{ date('Y') }} &mdash; Kelola semua media sosial dari satu dashboard</p>
+                    <p class="m-0">SocialPilot AI &copy; {{ date('Y') }} &mdash; Kelola semua media sosial dari
+                        satu dashboard</p>
                 </div>
             </div>
         </div>
@@ -312,12 +406,23 @@
     <script src="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/js/pcoded.js') }}"></script>
     <script src="{{ asset('mantis-free-bootstrap-admin-template/dist/assets/js/plugins/feather.min.js') }}"></script>
 
-    <script>layout_change('light');</script>
-    <script>change_box_container('false');</script>
-    <script>layout_rtl_change('false');</script>
-    <script>preset_change("preset-1");</script>
-    <script>font_change("Public-Sans");</script>
+    <script>
+        layout_change('light');
+    </script>
+    <script>
+        change_box_container('false');
+    </script>
+    <script>
+        layout_rtl_change('false');
+    </script>
+    <script>
+        preset_change("preset-1");
+    </script>
+    <script>
+        font_change("Public-Sans");
+    </script>
 
     @stack('scripts')
 </body>
+
 </html>

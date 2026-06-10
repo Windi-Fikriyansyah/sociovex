@@ -11,7 +11,8 @@ class Tenant extends Model
 {
     protected $fillable = [
         'uuid', 'business_name', 'owner_name', 'email', 'phone',
-        'zernio_profile_id', 'package_id', 'status', 'expired_at',
+        'zernio_profile_id',
+        'package_id', 'status', 'expired_at',
     ];
 
     protected $casts = [
@@ -91,5 +92,10 @@ class Tenant extends Model
     public function activityLogs(): HasMany
     {
         return $this->hasMany(ActivityLog::class);
+    }
+
+    public function zernioApiKeys(): HasMany
+    {
+        return $this->hasMany(ZernioApiKey::class);
     }
 }

@@ -101,7 +101,6 @@ class SocialAccountController extends Controller
 
             // --- 4. Redirect to Zernio OAuth ---
             return redirect()->away($authUrl);
-
         } catch (RuntimeException $e) {
             Log::error("SocialAccountController@connect failed: {$e->getMessage()}");
             return back()->with('error', 'Gagal menghubungkan ke Zernio: ' . $e->getMessage());
@@ -236,7 +235,6 @@ class SocialAccountController extends Controller
 
             return redirect()->route('social-accounts.index')
                 ->with('success', "{$synced} akun berhasil disinkronisasi dari Zernio.");
-
         } catch (RuntimeException $e) {
             Log::error("syncAndRedirect failed: {$e->getMessage()}");
             return redirect()->route('social-accounts.index')
@@ -256,13 +254,9 @@ class SocialAccountController extends Controller
             abort(403);
         }
 
-        if ($socialAccount->zernio_account_id && $tenant->zernio_profile_id) {
+        if ($socialAccount->zernio_account_id) {
             try {
-                $this->zernio->disconnectAccount(
-                    $socialAccount->platform,
-                    $socialAccount->zernio_account_id,
-                    $tenant->zernio_profile_id
-                );
+                $this->zernio->deleteAccount($socialAccount->zernio_account_id);
             } catch (RuntimeException $e) {
                 Log::warning("Zernio disconnect failed for account {$socialAccount->id}: {$e->getMessage()}");
             }
@@ -293,13 +287,9 @@ class SocialAccountController extends Controller
             abort(403);
         }
 
-        if ($socialAccount->zernio_account_id && $tenant->zernio_profile_id) {
+        if ($socialAccount->zernio_account_id) {
             try {
-                $this->zernio->disconnectAccount(
-                    $socialAccount->platform,
-                    $socialAccount->zernio_account_id,
-                    $tenant->zernio_profile_id
-                );
+                $this->zernio->deleteAccount($socialAccount->zernio_account_id);
             } catch (RuntimeException $e) {
                 Log::warning("Zernio delete failed for account {$socialAccount->id}: {$e->getMessage()}");
             }

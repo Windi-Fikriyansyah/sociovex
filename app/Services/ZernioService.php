@@ -11,6 +11,12 @@ class ZernioService
     protected string $baseUrl;
     protected string $apiKey;
 
+    // Timeout constants (in seconds)
+    protected const CONNECT_TIMEOUT = 10;  // Connection timeout
+    protected const READ_TIMEOUT = 60;     // Read/response timeout
+    protected const MAX_RETRIES = 3;       // Max retry attempts
+    protected const RETRY_DELAY = 500;     // Initial retry delay in ms (exponential backoff)
+
     public function __construct()
     {
         $this->baseUrl = rtrim(config('services.zernio.base_url', 'https://api.zernio.com'), '/');
@@ -21,6 +27,10 @@ class ZernioService
      * Return a configured HTTP client (no baseUrl — we build full URLs explicitly).
      * Redirects are disabled so we get the actual API response rather than
      * following a redirect to the Zernio marketing site on unknown endpoint paths.
+     *
+     * Includes timeout configuration:
+     * - connectTimeout: 10 seconds for establishing connection
+     * - timeout: 60 seconds for receiving response
      */
     protected function client(): \Illuminate\Http\Client\PendingRequest
     {
@@ -28,7 +38,10 @@ class ZernioService
             'Authorization' => 'Bearer ' . $this->apiKey,
             'Accept'        => 'application/json',
             'Content-Type'  => 'application/json',
-        ])->withoutRedirecting();
+        ])
+            ->withoutRedirecting()
+            ->timeout(self::READ_TIMEOUT)  // 60 second read timeout
+            ->connectTimeout(self::CONNECT_TIMEOUT);  // 10 second connect timeout
     }
 
     /**
@@ -37,6 +50,47 @@ class ZernioService
     protected function url(string $path): string
     {
         return $this->baseUrl . '/' . ltrim($path, '/');
+    }
+
+    /**
+     * Execute a request with automatic retry on timeout/connection errors.
+     *
+     * @param callable $callback Function that returns a Response object
+     * @param string $method Method name for logging
+     * @return mixed Response from the callback
+     */
+    protected function executeWithRetry(callable $callback, string $method)
+    {
+        $attempt = 1;
+        $lastException = null;
+
+        while ($attempt <= self::MAX_RETRIES) {
+            try {
+                return $callback();
+            } catch (\Exception $e) {
+                $lastException = $e;
+                $isTimeoutOrConnectionError = str_contains($e->getMessage(), 'timed out') ||
+                    str_contains($e->getMessage(), 'Connection') ||
+                    str_contains($e->getMessage(), 'curl error 28');
+
+                if (!$isTimeoutOrConnectionError || $attempt >= self::MAX_RETRIES) {
+                    throw $e;
+                }
+
+                // Log retry attempt
+                $delay = self::RETRY_DELAY * (2 ** ($attempt - 1)); // Exponential backoff: 500ms, 1s, 2s
+                Log::warning("Zernio {$method} timeout/connection error (attempt {$attempt}/{self::MAX_RETRIES}), retrying in {$delay}ms", [
+                    'error' => $e->getMessage(),
+                    'delay_ms' => $delay,
+                ]);
+
+                // Wait before retry (exponential backoff)
+                usleep($delay * 1000);
+                $attempt++;
+            }
+        }
+
+        throw $lastException ?? new RuntimeException("Zernio {$method} failed after {$attempt} attempts");
     }
 
     // ─── Profiles ────────────────────────────────────────────────────────────
@@ -103,8 +157,9 @@ class ZernioService
     }
 
     /**
-     * Disconnect a social account from a profile.
+     * Disconnect a social account from a profile (legacy endpoint).
      *
+     * @deprecated Use deleteAccount() instead
      * DELETE /v1/connect/{platform}/{accountId}?profileId={profileId}
      */
     public function disconnectAccount(string $platform, string $accountId, string $profileId): array
@@ -117,6 +172,20 @@ class ZernioService
         return $response->json();
     }
 
+    /**
+     * Disconnect and remove a connected social account.
+     *
+     * DELETE /v1/accounts/{accountId}
+     *
+     * Response: { "message": "Disconnected" }
+     */
+    public function deleteAccount(string $accountId): array
+    {
+        $response = $this->client()->delete($this->url("v1/accounts/{$accountId}"));
+        $this->throwIfFailed($response, 'deleteAccount');
+        return $response->json();
+    }
+
     // ─── Platforms ────────────────────────────────────────────────────────────
 
     /**
@@ -126,9 +195,11 @@ class ZernioService
      */
     public function getPlatforms(string $profileId): array
     {
-        $response = $this->client()->get($this->url("v1/platforms/{$profileId}"));
-        $this->throwIfFailed($response, 'getPlatforms');
-        return $response->json();
+        return $this->executeWithRetry(function () use ($profileId) {
+            $response = $this->client()->get($this->url("v1/platforms/{$profileId}"));
+            $this->throwIfFailed($response, 'getPlatforms');
+            return $response->json();
+        }, 'getPlatforms');
     }
 
     /**
@@ -136,9 +207,11 @@ class ZernioService
      */
     public function getAccount(string $profileId, string $accountId): array
     {
-        $response = $this->client()->get($this->url("v1/platforms/{$profileId}/{$accountId}"));
-        $this->throwIfFailed($response, 'getAccount');
-        return $response->json();
+        return $this->executeWithRetry(function () use ($profileId, $accountId) {
+            $response = $this->client()->get($this->url("v1/platforms/{$profileId}/{$accountId}"));
+            $this->throwIfFailed($response, 'getAccount');
+            return $response->json();
+        }, 'getAccount');
     }
 
     // ─── Posts ───────────────────────────────────────────────────────────────
@@ -208,9 +281,11 @@ class ZernioService
      */
     public function getInbox(string $profileId): array
     {
-        $response = $this->client()->get($this->url("v1/inbox/{$profileId}"));
-        $this->throwIfFailed($response, 'getInbox');
-        return $response->json();
+        return $this->executeWithRetry(function () use ($profileId) {
+            $response = $this->client()->get($this->url("v1/inbox/{$profileId}"));
+            $this->throwIfFailed($response, 'getInbox');
+            return $response->json();
+        }, 'getInbox');
     }
 
     /**
@@ -218,12 +293,14 @@ class ZernioService
      */
     public function replyToMessage(string $profileId, string $messageId, string $message): array
     {
-        $response = $this->client()->post(
-            $this->url("v1/inbox/{$profileId}/{$messageId}/reply"),
-            ['message' => $message]
-        );
-        $this->throwIfFailed($response, 'replyToMessage');
-        return $response->json();
+        return $this->executeWithRetry(function () use ($profileId, $messageId, $message) {
+            $response = $this->client()->post(
+                $this->url("v1/inbox/{$profileId}/{$messageId}/reply"),
+                ['message' => $message]
+            );
+            $this->throwIfFailed($response, 'replyToMessage');
+            return $response->json();
+        }, 'replyToMessage');
     }
 
     // ─── Webhooks ────────────────────────────────────────────────────────────
@@ -292,22 +369,84 @@ class ZernioService
      * Throw a RuntimeException with a descriptive message on HTTP failure
      * or when the response body is not valid JSON (e.g. Zernio serves HTML
      * for some paths that aren't recognised by their Next.js router).
+     *
+     * Also handles connection timeout and network errors gracefully.
      */
     protected function throwIfFailed(\Illuminate\Http\Client\Response $response, string $method): void
     {
         if ($response->failed()) {
+            $status = $response->status();
             $body   = $response->json();
             $reason = $body['message'] ?? $body['error'] ?? $response->body();
-            throw new RuntimeException("Zernio {$method} failed [{$response->status()}]: {$reason}");
+
+            // More descriptive error for timeouts
+            if ($status >= 500) {
+                Log::error("Zernio {$method} server error [{$status}]", [
+                    'method' => $method,
+                    'status' => $status,
+                    'reason' => $reason,
+                ]);
+            }
+
+            throw new RuntimeException("Zernio {$method} failed [{$status}]: {$reason}");
         }
 
         // Guard against HTML "200 OK" responses (Next.js catch-all route)
         $contentType = $response->header('Content-Type') ?? '';
         if (!str_contains($contentType, 'application/json') && !str_contains($contentType, 'text/json')) {
+            Log::warning("Zernio {$method}: unexpected content type", [
+                'method' => $method,
+                'content_type' => $contentType,
+                'body_preview' => substr($response->body(), 0, 200),
+            ]);
+
             throw new RuntimeException(
                 "Zernio {$method}: expected JSON response but got Content-Type '{$contentType}'. " .
-                "The endpoint may not be available for this resource ID."
+                    "The endpoint may not be available for this resource ID."
             );
         }
     }
+
+    public function getInboxConversations(array $params = []): array
+    {
+        return $this->executeWithRetry(function () use ($params) {
+
+            $response = $this->client()->get(
+                $this->url('v1/inbox/conversations'),
+                array_filter([
+                    'profileId' => $params['profileId'] ?? null,
+                    'platform'  => $params['platform'] ?? null,
+                    'status'    => $params['status'] ?? 'active',
+                    'sortOrder' => $params['sortOrder'] ?? 'desc',
+                    'limit'     => $params['limit'] ?? 50,
+                    'cursor'    => $params['cursor'] ?? null,
+                    'accountId' => $params['accountId'] ?? null,
+                ])
+            );
+
+            $this->throwIfFailed($response, 'getInboxConversations');
+
+            return $response->json();
+        }, 'getInboxConversations');
+    }
+
+
+  
+public function getConversationMessages(string $conversationId): array
+{
+    return $this->executeWithRetry(function () use ($conversationId) {
+
+        $response = $this->client()->get(
+            $this->url("v1/inbox/conversations/{$conversationId}")
+        );
+
+        $this->throwIfFailed(
+            $response,
+            'getConversationMessages'
+        );
+
+        return $response->json();
+
+    }, 'getConversationMessages');
+}
 }

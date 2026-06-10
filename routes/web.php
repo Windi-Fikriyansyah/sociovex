@@ -35,6 +35,9 @@ Route::middleware(['auth', 'verified', 'tenant.active'])->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
+    Route::post('/profile/zernio', [ProfileController::class, 'storeZernioKey'])->name('profile.zernio.store');
+    Route::delete('/profile/zernio/{zernioApiKey}', [ProfileController::class, 'destroyZernioKey'])->name('profile.zernio.destroy');
+    Route::post('/profile/zernio/{zernioApiKey}/regenerate-secret', [ProfileController::class, 'regenerateZernioSecret'])->name('profile.zernio.regenerate-secret');
 
     // Social Accounts
     Route::prefix('social-accounts')->name('social-accounts.')->group(function () {
@@ -64,8 +67,14 @@ Route::middleware(['auth', 'verified', 'tenant.active'])->group(function () {
     // Inbox
     Route::prefix('inbox')->name('inbox.')->group(function () {
         Route::get('/', [InboxController::class, 'index'])->name('index');
+        Route::get('/messages', [InboxController::class, 'messages'])->name('messages');
+        Route::get('/comments', [InboxController::class, 'comments'])->name('comments');
         Route::post('/comments/{comment}/reply', [InboxController::class, 'replyComment'])->name('reply-comment');
         Route::patch('/messages/{message}/read', [InboxController::class, 'markRead'])->name('mark-read');
+        Route::get(
+    '/messages/{id}',
+    [InboxController::class, 'conversationMessages']
+)->name('conversation.messages');
     });
 
     // AI Settings
