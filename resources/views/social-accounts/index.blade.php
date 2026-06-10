@@ -22,7 +22,7 @@
                     @php
                         $package = $tenant->package;
                         $currentCount = $accounts->where('status', 'active')->count();
-                        $maxAccounts = $package?->max_social_accounts ?? 1;
+                        $maxAccounts = $package?->max_social_accounts ?? 10;
                         $canAdd = $currentCount < $maxAccounts;
                     @endphp
 
@@ -57,6 +57,99 @@
                     @endif
                 </div>
             </div>
+
+
+            {{-- Di bagian Connect New Account, tambahkan section untuk Ads --}}
+<div class="card mt-4 border-success">
+    <div class="card-header bg-success-subtle">
+        <div class="d-flex align-items-center">
+            <div class="rounded-circle bg-success text-white d-flex align-items-center justify-content-center me-2"
+                style="width:40px;height:40px;">
+                <i class="ti ti-chart-bar"></i>
+            </div>
+
+            <div>
+                <h5 class="mb-0">Hubungkan Akun Ads</h5>
+                <small class="text-muted">
+                    Kelola campaign dan iklan dari berbagai platform
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <div class="card-body">
+
+        <div class="row g-3">
+
+            @foreach([
+                ['facebook','ti ti-brand-facebook','#1877F2','Meta Ads'],
+                ['googleads','ti ti-brand-google','#4285F4','Google Ads'],
+                ['linkedin','ti ti-brand-linkedin','#0A66C2','LinkedIn Ads'],
+                ['tiktok','ti ti-brand-tiktok','#000000','TikTok Ads'],
+            ] as [$slug,$icon,$color,$label])
+
+            <div class="col-12">
+                <a href="{{ route('social-accounts.connect-ads',['platform'=>$slug]) }}"
+                    class="text-decoration-none">
+
+                    <div class="border rounded-3 p-3 d-flex align-items-center justify-content-between ads-item">
+
+                        <div class="d-flex align-items-center">
+
+                            <div class="rounded-circle d-flex align-items-center justify-content-center me-3"
+                                style="width:46px;height:46px;background:{{ $color }}15;">
+
+                                <i class="{{ $icon }}"
+                                    style="font-size:22px;color:{{ $color }}"></i>
+
+                            </div>
+
+                            <div>
+                                <div class="fw-semibold text-dark">
+                                    {{ $label }}
+                                </div>
+
+                                <small class="text-muted">
+                                    Hubungkan akun iklan
+                                </small>
+                            </div>
+
+                        </div>
+
+                        <i class="ti ti-chevron-right text-muted"></i>
+
+                    </div>
+
+                </a>
+            </div>
+
+            @endforeach
+
+        </div>
+
+        @php
+            $adsAccounts = $accounts->where('is_ads_account', true);
+        @endphp
+
+        @if($adsAccounts->count())
+
+            <div class="alert alert-success mt-4 mb-0 d-flex justify-content-between align-items-center">
+
+                <span>
+                    <i class="ti ti-check me-1"></i>
+                    Akun Ads Terhubung
+                </span>
+
+                <span class="badge bg-success">
+                    {{ $adsAccounts->count() }}
+                </span>
+
+            </div>
+
+        @endif
+
+    </div>
+</div>
         </div>
 
         {{-- ── Connected Accounts ──────────────────────────────────────────── --}}

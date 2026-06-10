@@ -28,6 +28,9 @@ Route::get('/social-accounts/oauth-callback/{platform}', [SocialAccountControlle
 // Authenticated routes
 Route::middleware(['auth', 'verified', 'tenant.active'])->group(function () {
 
+    // Broadcasting authorization (for Laravel Echo / Reverb)
+    Route::post('/broadcasting/auth', [\Illuminate\Broadcasting\BroadcastController::class, 'authenticate']);
+
     // Dashboard
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
@@ -45,6 +48,9 @@ Route::middleware(['auth', 'verified', 'tenant.active'])->group(function () {
         Route::get('/connect/{platform}', [SocialAccountController::class, 'connect'])->name('connect');
         Route::patch('/{socialAccount}/disconnect', [SocialAccountController::class, 'disconnect'])->name('disconnect');
         Route::delete('/{socialAccount}', [SocialAccountController::class, 'destroy'])->name('destroy');
+
+        Route::get('/connect-ads/{platform}', [SocialAccountController::class, 'connectAds'])->name('connect-ads');
+    Route::get('/ads-callback/{platform}', [SocialAccountController::class, 'adsCallback'])->name('ads-callback');
     });
 
     // Posts
@@ -69,7 +75,6 @@ Route::middleware(['auth', 'verified', 'tenant.active'])->group(function () {
         Route::get('/', [InboxController::class, 'index'])->name('index');
         Route::get('/messages', [InboxController::class, 'messages'])->name('messages');
         Route::get('/conversations/json', [InboxController::class, 'conversationsJson'])->name('conversations.json');
-        Route::get('/events', [InboxController::class, 'inboxEvents'])->name('events');
         Route::get('/comments', [InboxController::class, 'comments'])->name('comments');
         Route::post('/comments/{comment}/reply', [InboxController::class, 'replyComment'])->name('reply-comment');
         Route::patch('/messages/{message}/read', [InboxController::class, 'markRead'])->name('mark-read');

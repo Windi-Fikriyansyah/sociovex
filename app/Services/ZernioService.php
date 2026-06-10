@@ -12,11 +12,10 @@ class ZernioService
     protected string $baseUrl;
     protected string $apiKey;
 
-    // Timeout constants (in seconds)
-    protected const CONNECT_TIMEOUT = 10;  // Connection timeout
-    protected const READ_TIMEOUT = 60;     // Read/response timeout
-    protected const MAX_RETRIES = 3;       // Max retry attempts
-    protected const RETRY_DELAY = 500;     // Initial retry delay in ms (exponential backoff)
+    protected const CONNECT_TIMEOUT = 10;
+    protected const READ_TIMEOUT = 60;
+    protected const MAX_RETRIES = 3;
+    protected const RETRY_DELAY = 500;
 
     public function __construct(?string $apiKey = null)
     {
@@ -24,35 +23,18 @@ class ZernioService
         $this->apiKey  = $apiKey ?? config('services.zernio.api_key', '');
     }
 
-    /**
-     * Set the API key at runtime.
-     */
     public function setApiKey(string $apiKey): static
     {
         $this->apiKey = $apiKey;
         return $this;
     }
 
-    /**
-     * Create a ZernioService instance configured with the tenant's first active API key.
-     * Falls back to the global config key if the tenant has no keys.
-     */
     public static function forTenant(Tenant $tenant): static
     {
         $firstKey = $tenant->zernioApiKeys()->where('is_active', true)->first();
-
         return new static($firstKey?->api_key);
     }
 
-    /**
-     * Return a configured HTTP client (no baseUrl — we build full URLs explicitly).
-     * Redirects are disabled so we get the actual API response rather than
-     * following a redirect to the Zernio marketing site on unknown endpoint paths.
-     *
-     * Includes timeout configuration:
-     * - connectTimeout: 10 seconds for establishing connection
-     * - timeout: 60 seconds for receiving response
-     */
     protected function client(): \Illuminate\Http\Client\PendingRequest
     {
         return Http::withHeaders([
@@ -60,26 +42,15 @@ class ZernioService
             'Accept'        => 'application/json',
             'Content-Type'  => 'application/json',
         ])
-            ->withoutRedirecting()
-            ->timeout(self::READ_TIMEOUT)  // 60 second read timeout
-            ->connectTimeout(self::CONNECT_TIMEOUT);  // 10 second connect timeout
+            ->timeout(self::READ_TIMEOUT)
+            ->connectTimeout(self::CONNECT_TIMEOUT);
     }
 
-    /**
-     * Build the absolute URL for a given path segment.
-     */
     protected function url(string $path): string
     {
         return $this->baseUrl . '/' . ltrim($path, '/');
     }
 
-    /**
-     * Execute a request with automatic retry on timeout/connection errors.
-     *
-     * @param callable $callback Function that returns a Response object
-     * @param string $method Method name for logging
-     * @return mixed Response from the callback
-     */
     protected function executeWithRetry(callable $callback, string $method)
     {
         $attempt = 1;
@@ -98,14 +69,12 @@ class ZernioService
                     throw $e;
                 }
 
-                // Log retry attempt
-                $delay = self::RETRY_DELAY * (2 ** ($attempt - 1)); // Exponential backoff: 500ms, 1s, 2s
-                Log::warning("Zernio {$method} timeout/connection error (attempt {$attempt}/{self::MAX_RETRIES}), retrying in {$delay}ms", [
+                $delay = self::RETRY_DELAY * (2 ** ($attempt - 1));
+                Log::warning("Zernio {$method} timeout/connection error (attempt {$attempt}/" . self::MAX_RETRIES . "), retrying in {$delay}ms", [
                     'error' => $e->getMessage(),
                     'delay_ms' => $delay,
                 ]);
 
-                // Wait before retry (exponential backoff)
                 usleep($delay * 1000);
                 $attempt++;
             }
@@ -114,13 +83,8 @@ class ZernioService
         throw $lastException ?? new RuntimeException("Zernio {$method} failed after {$attempt} attempts");
     }
 
-    // ─── Profiles ────────────────────────────────────────────────────────────
-
-    /**
-     * Create a new Zernio profile.
-     *
-     * Response: { "message": "...", "profile": { "_id": "...", "name": "...", ... } }
-     */
+    // ─── Profiles API ────────────────────────────────────────────────────────────
+    // Endpoint: POST /v1/profiles
     public function createProfile(string $name): array
     {
         $response = $this->client()->post($this->url('v1/profiles'), ['name' => $name]);
@@ -134,15 +98,13 @@ class ZernioService
                 'status'   => $response->status(),
                 'response' => $data,
             ]);
-            throw new RuntimeException('Zernio createProfile: response missing profile._id. Raw: ' . json_encode($data));
+            throw new RuntimeException('Zernio createProfile: response missing profile._id');
         }
 
         return $data;
     }
 
-    /**
-     * List all profiles.
-     */
+    // Endpoint: GET /v1/profiles
     public function getProfiles(): array
     {
         $response = $this->client()->get($this->url('v1/profiles'));
@@ -150,9 +112,7 @@ class ZernioService
         return $response->json();
     }
 
-    /**
-     * Delete a profile.
-     */
+    // Endpoint: DELETE /v1/profiles/{profileId}
     public function deleteProfile(string $profileId): array
     {
         $response = $this->client()->delete($this->url("v1/profiles/{$profileId}"));
@@ -160,13 +120,8 @@ class ZernioService
         return $response->json();
     }
 
-    // ─── Connect / Disconnect ────────────────────────────────────────────────
-
-    /**
-     * Get OAuth URL for connecting a social platform.
-     *
-     * Response: { "success": true, "authUrl": "https://..." }
-     */
+    // ─── Connect API ────────────────────────────────────────────────────────────
+    // Endpoint: GET /v1/connect/{platform}
     public function getConnectUrl(string $platform, string $profileId, string $redirectUrl): array
     {
         $response = $this->client()->get($this->url("v1/connect/{$platform}"), [
@@ -177,29 +132,28 @@ class ZernioService
         return $response->json();
     }
 
-    /**
-     * Disconnect a social account from a profile (legacy endpoint).
-     *
-     * @deprecated Use deleteAccount() instead
-     * DELETE /v1/connect/{platform}/{accountId}?profileId={profileId}
-     */
-    public function disconnectAccount(string $platform, string $accountId, string $profileId): array
+    // ─── Accounts API ────────────────────────────────────────────────────────────
+    // Endpoint: GET /v1/accounts?profileId={profileId}
+    public function getAccounts(string $profileId): array
     {
-        $response = $this->client()->delete(
-            $this->url("v1/connect/{$platform}/{$accountId}"),
-            ['profileId' => $profileId]
-        );
-        $this->throwIfFailed($response, 'disconnectAccount');
+        return $this->executeWithRetry(function () use ($profileId) {
+            $response = $this->client()->get($this->url('v1/accounts'), [
+                'profileId' => $profileId
+            ]);
+            $this->throwIfFailed($response, 'getAccounts');
+            return $response->json();
+        }, 'getAccounts');
+    }
+
+    // Endpoint: GET /v1/accounts/{accountId}
+    public function getAccount(string $accountId): array
+    {
+        $response = $this->client()->get($this->url("v1/accounts/{$accountId}"));
+        $this->throwIfFailed($response, 'getAccount');
         return $response->json();
     }
 
-    /**
-     * Disconnect and remove a connected social account.
-     *
-     * DELETE /v1/accounts/{accountId}
-     *
-     * Response: { "message": "Disconnected" }
-     */
+    // Endpoint: DELETE /v1/accounts/{accountId}
     public function deleteAccount(string $accountId): array
     {
         $response = $this->client()->delete($this->url("v1/accounts/{$accountId}"));
@@ -207,42 +161,8 @@ class ZernioService
         return $response->json();
     }
 
-    // ─── Platforms ────────────────────────────────────────────────────────────
-
-    /**
-     * Get all connected platforms/accounts for a profile.
-     *
-     * Response: { "success": true, "platforms": [ { "_id": "acc_...", "platform": "instagram", "username": "...", ... } ] }
-     */
-    public function getPlatforms(string $profileId): array
-    {
-        return $this->executeWithRetry(function () use ($profileId) {
-            $response = $this->client()->get($this->url("v1/platforms/{$profileId}"));
-            $this->throwIfFailed($response, 'getPlatforms');
-            return $response->json();
-        }, 'getPlatforms');
-    }
-
-    /**
-     * Get a specific connected account.
-     */
-    public function getAccount(string $profileId, string $accountId): array
-    {
-        return $this->executeWithRetry(function () use ($profileId, $accountId) {
-            $response = $this->client()->get($this->url("v1/platforms/{$profileId}/{$accountId}"));
-            $this->throwIfFailed($response, 'getAccount');
-            return $response->json();
-        }, 'getAccount');
-    }
-
-    // ─── Posts ───────────────────────────────────────────────────────────────
-
-    /**
-     * Publish a post immediately via Zernio.
-     *
-     * @param  array{profileId: string, accountIds: string[], content: string, mediaUrls?: string[]} $payload
-     * @return string  The Zernio post _id.
-     */
+    // ─── Posts API ───────────────────────────────────────────────────────────────
+    // Endpoint: POST /v1/posts
     public function publishPost(array $payload): string
     {
         $response = $this->client()->post($this->url('v1/posts'), $payload);
@@ -256,12 +176,7 @@ class ZernioService
         return $postId;
     }
 
-    /**
-     * Schedule a post via Zernio (same endpoint as publish, with scheduleAt).
-     *
-     * @param  array{profileId: string, accountIds: string[], content: string, scheduleAt: string, mediaUrls?: string[]} $payload
-     * @return string  The Zernio post _id.
-     */
+    // Endpoint: POST /v1/posts (with scheduleAt parameter)
     public function schedulePost(array $payload): string
     {
         $response = $this->client()->post($this->url('v1/posts'), $payload);
@@ -275,9 +190,7 @@ class ZernioService
         return $postId;
     }
 
-    /**
-     * Get a post by ID.
-     */
+    // Endpoint: GET /v1/posts/{postId}
     public function getPost(string $postId): array
     {
         $response = $this->client()->get($this->url("v1/posts/{$postId}"));
@@ -285,9 +198,7 @@ class ZernioService
         return $response->json();
     }
 
-    /**
-     * Delete a post.
-     */
+    // Endpoint: DELETE /v1/posts/{postId}
     public function deletePost(string $postId): array
     {
         $response = $this->client()->delete($this->url("v1/posts/{$postId}"));
@@ -295,133 +206,8 @@ class ZernioService
         return $response->json();
     }
 
-    // ─── Inbox ───────────────────────────────────────────────────────────────
-
-    /**
-     * Get inbox messages for a profile (legacy).
-     */
-    public function getInbox(string $profileId): array
-    {
-        return $this->executeWithRetry(function () use ($profileId) {
-            $response = $this->client()->get($this->url("v1/inbox/{$profileId}"));
-            $this->throwIfFailed($response, 'getInbox');
-            return $response->json();
-        }, 'getInbox');
-    }
-
-    /**
-     * List inbox conversations.
-     *
-     * GET /v1/inbox/conversations?profileId=...&platform=...&accountId=...
-     */
-    public function getInboxConversations(array $params = []): array
-    {
-        return $this->executeWithRetry(function () use ($params) {
-            $response = $this->client()->get(
-                $this->url('v1/inbox/conversations'),
-                array_filter([
-                    'profileId' => $params['profileId'] ?? null,
-                    'platform'  => $params['platform'] ?? null,
-                    'status'    => $params['status'] ?? 'active',
-                    'sortOrder' => $params['sortOrder'] ?? 'desc',
-                    'limit'     => $params['limit'] ?? 50,
-                    'cursor'    => $params['cursor'] ?? null,
-                    'accountId' => $params['accountId'] ?? null,
-                ])
-            );
-            $this->throwIfFailed($response, 'getInboxConversations');
-            return $response->json();
-        }, 'getInboxConversations');
-    }
-
-    /**
-     * Get messages from a specific conversation.
-     *
-     * GET /v1/inbox/conversations/{conversationId}/messages?accountId=...
-     *
-     * @param  string $conversationId  Platform-specific conversation ID
-     * @param  string $accountId       Zernio social account ID (required)
-     */
-    public function getConversationMessages(string $conversationId, string $accountId): array
-    {
-        return $this->executeWithRetry(function () use ($conversationId, $accountId) {
-            $response = $this->client()->get(
-                $this->url("v1/inbox/conversations/{$conversationId}/messages"),
-                ['accountId' => $accountId]
-            );
-            $this->throwIfFailed($response, 'getConversationMessages');
-            return $response->json();
-        }, 'getConversationMessages');
-    }
-
-    /**
-     * Send a message (reply) to a conversation.
-     *
-     * POST /v1/inbox/conversations/{conversationId}/messages
-     *
-     * @param  string $conversationId  Platform-specific conversation ID
-     * @param  string $accountId       Zernio social account ID (required)
-     * @param  string $message         Message text
-     */
-    public function sendConversationMessage(string $conversationId, string $accountId, string $message): array
-    {
-        return $this->executeWithRetry(function () use ($conversationId, $accountId, $message) {
-            $response = $this->client()->post(
-                $this->url("v1/inbox/conversations/{$conversationId}/messages"),
-                [
-                    'accountId' => $accountId,
-                    'message'   => $message,
-                ]
-            );
-            $this->throwIfFailed($response, 'sendConversationMessage');
-            return $response->json();
-        }, 'sendConversationMessage');
-    }
-
-    /**
-     * Mark a conversation as read.
-     *
-     * POST /v1/inbox/conversations/{conversationId}/read
-     *
-     * @param  string $conversationId  Platform-specific conversation ID
-     * @param  string $accountId       Zernio social account ID (required)
-     */
-    public function markConversationAsRead(string $conversationId, string $accountId): array
-    {
-        return $this->executeWithRetry(function () use ($conversationId, $accountId) {
-            $response = $this->client()->post(
-                $this->url("v1/inbox/conversations/{$conversationId}/read"),
-                ['accountId' => $accountId]
-            );
-            $this->throwIfFailed($response, 'markConversationAsRead');
-            return $response->json();
-        }, 'markConversationAsRead');
-    }
-
-    /**
-     * Reply to an inbox message (legacy).
-     *
-     * @deprecated Use sendConversationMessage() instead.
-     */
-    public function replyToMessage(string $profileId, string $messageId, string $message): array
-    {
-        return $this->executeWithRetry(function () use ($profileId, $messageId, $message) {
-            $response = $this->client()->post(
-                $this->url("v1/inbox/{$profileId}/{$messageId}/reply"),
-                ['message' => $message]
-            );
-            $this->throwIfFailed($response, 'replyToMessage');
-            return $response->json();
-        }, 'replyToMessage');
-    }
-
-    // ─── Webhooks ────────────────────────────────────────────────────────────
-
-    /**
-     * Register a webhook for a profile.
-     *
-     * @param  string[] $events  e.g. ['new_message', 'new_comment', 'post_published', 'post_failed']
-     */
+    // ─── Webhooks API ────────────────────────────────────────────────────────────
+    // Endpoint: POST /v1/webhooks
     public function registerWebhook(string $profileId, string $url, array $events): array
     {
         $response = $this->client()->post($this->url('v1/webhooks'), [
@@ -433,9 +219,7 @@ class ZernioService
         return $response->json();
     }
 
-    /**
-     * List all webhooks.
-     */
+    // Endpoint: GET /v1/webhooks
     public function listWebhooks(): array
     {
         $response = $this->client()->get($this->url('v1/webhooks'));
@@ -443,9 +227,7 @@ class ZernioService
         return $response->json();
     }
 
-    /**
-     * Update a webhook.
-     */
+    // Endpoint: PUT /v1/webhooks/{webhookId}
     public function updateWebhook(string $webhookId, array $data): array
     {
         $response = $this->client()->put($this->url("v1/webhooks/{$webhookId}"), $data);
@@ -453,9 +235,7 @@ class ZernioService
         return $response->json();
     }
 
-    /**
-     * Delete a webhook.
-     */
+    // Endpoint: DELETE /v1/webhooks/{webhookId}
     public function deleteWebhook(string $webhookId): array
     {
         $response = $this->client()->delete($this->url("v1/webhooks/{$webhookId}"));
@@ -463,27 +243,18 @@ class ZernioService
         return $response->json();
     }
 
-    // ─── Analytics ───────────────────────────────────────────────────────────
-
-    /**
-     * Get analytics for a profile.
-     */
+    // ─── Analytics API ───────────────────────────────────────────────────────────
+    // Endpoint: GET /v1/analytics?profileId={profileId}
     public function getAnalytics(string $profileId): array
     {
-        $response = $this->client()->get($this->url("v1/analytics/{$profileId}"));
+        $response = $this->client()->get($this->url('v1/analytics'), [
+            'profileId' => $profileId
+        ]);
         $this->throwIfFailed($response, 'getAnalytics');
         return $response->json();
     }
 
-    // ─── Helpers ─────────────────────────────────────────────────────────────
-
-    /**
-     * Throw a RuntimeException with a descriptive message on HTTP failure
-     * or when the response body is not valid JSON (e.g. Zernio serves HTML
-     * for some paths that aren't recognised by their Next.js router).
-     *
-     * Also handles connection timeout and network errors gracefully.
-     */
+    // ─── Helpers ─────────────────────────────────────────────────────────────────
     protected function throwIfFailed(\Illuminate\Http\Client\Response $response, string $method): void
     {
         if ($response->failed()) {
@@ -491,7 +262,6 @@ class ZernioService
             $body   = $response->json();
             $reason = $body['message'] ?? $body['error'] ?? $response->body();
 
-            // More descriptive error for timeouts
             if ($status >= 500) {
                 Log::error("Zernio {$method} server error [{$status}]", [
                     'method' => $method,
@@ -503,7 +273,6 @@ class ZernioService
             throw new RuntimeException("Zernio {$method} failed [{$status}]: {$reason}");
         }
 
-        // Guard against HTML "200 OK" responses (Next.js catch-all route)
         $contentType = $response->header('Content-Type') ?? '';
         if (!str_contains($contentType, 'application/json') && !str_contains($contentType, 'text/json')) {
             Log::warning("Zernio {$method}: unexpected content type", [
@@ -513,9 +282,52 @@ class ZernioService
             ]);
 
             throw new RuntimeException(
-                "Zernio {$method}: expected JSON response but got Content-Type '{$contentType}'. " .
-                    "The endpoint may not be available for this resource ID."
+                "Zernio {$method}: expected JSON response but got Content-Type '{$contentType}'"
             );
         }
     }
+
+    public function getAdsConnectUrl(string $platform, string $profileId, ?string $accountId = null, ?string $redirectUrl = null, ?array $adAccountIds = null): array
+{
+    $queryParams = [
+        'profileId' => $profileId,
+    ];
+    
+    if ($accountId) {
+        $queryParams['accountId'] = $accountId;
+    }
+    
+    if ($redirectUrl) {
+        $queryParams['redirect_url'] = $redirectUrl;
+    }
+    
+    if ($adAccountIds && !empty($adAccountIds)) {
+        $queryParams['adAccountIds'] = $adAccountIds;
+    }
+    
+    $response = $this->client()->get($this->url("v1/connect/{$platform}/ads"), $queryParams);
+    $this->throwIfFailed($response, 'getAdsConnectUrl');
+    return $response->json();
+}
+
+// Endpoint: GET /v1/connect/tiktok-ads (untuk konfigurasi Brand Identity)
+public function configureTiktokAdsBrandIdentity(string $profileId, array $brandIdentity): array
+{
+    $response = $this->client()->patch($this->url('v1/connect/tiktok-ads'), [
+        'profileId' => $profileId,
+        'brandIdentity' => $brandIdentity,
+    ]);
+    $this->throwIfFailed($response, 'configureTiktokAdsBrandIdentity');
+    return $response->json();
+}
+
+// Endpoint: GET /v1/connect/{platform}/status (cek status koneksi ads)
+public function getAdsConnectionStatus(string $platform, string $profileId): array
+{
+    $response = $this->client()->get($this->url("v1/connect/{$platform}/status"), [
+        'profileId' => $profileId
+    ]);
+    $this->throwIfFailed($response, 'getAdsConnectionStatus');
+    return $response->json();
+}
 }

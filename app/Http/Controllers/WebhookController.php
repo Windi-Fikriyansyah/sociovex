@@ -2,16 +2,18 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\InboxMessageReceived;
 use App\Models\AiSetting;
 use App\Models\Comment;
 use App\Models\CommentReply;
-use App\Models\InboxEvent;
+use App\Models\Conversation;
 use App\Models\InboxMessage;
 use App\Models\KnowledgeBase;
 use App\Models\Post;
 use App\Models\ScheduledPost;
 use App\Models\SocialAccount;
 use App\Models\WebhookLog;
+use App\Models\ZernioApiKey;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -43,11 +45,12 @@ class WebhookController extends Controller
 
         try {
             match ($eventType) {
-                'comment.new'    => $this->handleNewComment($payload),
-                'message.new'    => $this->handleNewMessage($payload),
-                'post.published' => $this->handlePostPublished($payload),
-                'post.failed'    => $this->handlePostFailed($payload),
-                default          => null,
+                'comment.new'       => $this->handleNewComment($payload),
+                'message.new'       => $this->handleNewMessage($payload),
+                'message.received'  => $this->handleNewMessage($payload),
+                'post.published'    => $this->handlePostPublished($payload),
+                'post.failed'       => $this->handlePostFailed($payload),
+                default             => Log::info("Webhook: unhandled event type '{$eventType}'"),
             };
 
             $log->update(['status' => 'processed']);
@@ -76,36 +79,100 @@ class WebhookController extends Controller
         $signature = $request->header('X-Zernio-Signature')
             ?? $request->header('X-Webhook-Signature');
 
-        if (!$signature) {
-            // If no signature header, check global config (dev fallback)
-            $globalSecret = config('services.zernio.webhook_secret');
-            return empty($globalSecret); // pass only if no secret configured
+        $content = $request->getContent();
+        $payload = $request->all();
+
+        // ── Step 1: Identify the tenant from the payload ─────────
+        // Zernio sends account_id which maps to a social_account,
+        // which belongs to a tenant.
+        $zernioAccountId = $payload['account_id'] ?? null;
+        $tenant = null;
+
+        if ($zernioAccountId) {
+            $socialAccount = SocialAccount::where('zernio_account_id', $zernioAccountId)->first();
+            if ($socialAccount) {
+                $tenant = $socialAccount->tenant;
+            }
         }
 
-        // Try each tenant's webhook_secret first, then fall back to global config
-        $secrets = \App\Models\ZernioApiKey::whereNotNull('webhook_secret')
-            ->where('webhook_secret', '!=', '')
-            ->pluck('webhook_secret')
-            ->toArray();
+        // ── Step 2: Collect candidate secrets for this tenant ────
+        $secrets = [];
 
-        // Also check global config as fallback
+        if ($tenant) {
+            // Tenant-specific webhook secrets (highest priority)
+            $tenantSecrets = ZernioApiKey::where('tenant_id', $tenant->id)
+                ->where('is_active', true)
+                ->whereNotNull('webhook_secret')
+                ->where('webhook_secret', '!=', '')
+                ->pluck('webhook_secret')
+                ->toArray();
+            $secrets = array_merge($secrets, $tenantSecrets);
+        }
+
+        // Global fallback secret from .env
         $globalSecret = config('services.zernio.webhook_secret');
         if ($globalSecret) {
             $secrets[] = $globalSecret;
         }
 
-        if (empty($secrets)) {
-            return true; // No secrets configured anywhere, skip verification
+        // ── Step 3: If no signature header ──────────────────────
+        if (!$signature) {
+            // Allow if no secrets are configured at all (dev mode)
+            if (empty($secrets)) {
+                Log::info('Zernio webhook: no signature, no secrets configured — allowing');
+                return true;
+            }
+            // Secrets exist but no signature provided — reject
+            Log::warning('Zernio webhook: no signature header but secrets are configured');
+            return false;
         }
 
-        $content = $request->getContent();
+        // ── Step 4: If no secrets configured anywhere, allow ─────
+        if (empty($secrets)) {
+            Log::info('Zernio webhook: signature present but no secrets configured — allowing');
+            return true;
+        }
 
+        // ── Step 5: Verify signature against collected secrets ──
         foreach ($secrets as $secret) {
+            // Try "sha256=..." format
             $expected = 'sha256=' . hash_hmac('sha256', $content, $secret);
             if (hash_equals($expected, $signature)) {
                 return true;
             }
+            // Try raw hex format (some providers don't prepend "sha256=")
+            $rawExpected = hash_hmac('sha256', $content, $secret);
+            if (hash_equals($rawExpected, $signature)) {
+                return true;
+            }
         }
+
+        // ── Step 6: Last resort — try ALL webhook secrets from ALL tenants ──
+        // This handles edge cases where account_id doesn't map yet
+        $allSecrets = ZernioApiKey::where('is_active', true)
+            ->whereNotNull('webhook_secret')
+            ->where('webhook_secret', '!=', '')
+            ->pluck('webhook_secret')
+            ->toArray();
+
+        foreach ($allSecrets as $secret) {
+            if (in_array($secret, $secrets)) continue; // Already tried
+            $expected = 'sha256=' . hash_hmac('sha256', $content, $secret);
+            if (hash_equals($expected, $signature)) {
+                return true;
+            }
+            $rawExpected = hash_hmac('sha256', $content, $secret);
+            if (hash_equals($rawExpected, $signature)) {
+                return true;
+            }
+        }
+
+        Log::warning('Zernio webhook: signature verification failed', [
+            'ip'           => $request->ip(),
+            'account_id'   => $zernioAccountId,
+            'tenant_found' => $tenant ? $tenant->id : null,
+            'tried_secrets' => count($secrets) . '+' . (count($allSecrets) - count($secrets)),
+        ]);
 
         return false;
     }
@@ -148,56 +215,94 @@ class WebhookController extends Controller
             $this->autoReplyWithAi($comment, $aiSetting);
         }
 
-        // Fire real-time event for frontend
-        InboxEvent::create([
-            'tenant_id'  => $socialAccount->tenant_id,
-            'event_type' => 'new_comment',
-            'payload'    => [
-                'account_id' => $zernioAccountId,
-                'username'   => $payload['username'] ?? 'Unknown',
-                'text'       => $payload['text'] ?? '',
-                'platform'   => $socialAccount->platform,
-            ],
-        ]);
+        // Fire real-time event for frontend is no longer needed —
+        // comments use their own view and are not part of the inbox
+        // WebSocket channel. The inbox page polls separately for comments.
     }
 
     private function handleNewMessage(array $payload): void
     {
-        $zernioAccountId = $payload['account_id'] ?? null;
+        // ── Normalize payload: Zernio v2 sends nested structure ───
+        // v1 (flat): { account_id, sender_name, sender_id, text, message_id, ... }
+        // v2 (nested): { message: { text, sender: { id, name } }, account: { id }, conversation: { id, participantName } }
+        $msg    = $payload['message'] ?? [];
+        $conv   = $payload['conversation'] ?? [];
+        $acct   = $payload['account'] ?? [];
 
-        if (!$zernioAccountId) return;
-
-        $socialAccount = SocialAccount::where('zernio_account_id', $zernioAccountId)->first();
-
-        if (!$socialAccount) {
-            Log::warning("Webhook message.new: unknown account_id {$zernioAccountId}");
+        $zernioAccountId = $acct['id'] ?? $payload['account_id'] ?? null;
+        if (!$zernioAccountId) {
+            Log::warning('Webhook message: no account_id found', ['payload' => $payload]);
             return;
         }
 
-        InboxMessage::create([
+        $socialAccount = SocialAccount::where('zernio_account_id', $zernioAccountId)->first();
+        if (!$socialAccount) {
+            Log::warning("Webhook message: unknown account_id {$zernioAccountId}");
+            return;
+        }
+
+        // ── Normalize fields from either v1 or v2 format ────────
+        $zernioMessageId    = $msg['id'] ?? $payload['message_id'] ?? null;
+        $senderName         = $msg['sender']['name'] ?? $payload['sender_name'] ?? 'Unknown';
+        $senderId           = $msg['sender']['id'] ?? $payload['sender_id'] ?? null;
+        $messageText        = $msg['text'] ?? $payload['text'] ?? '';
+        $direction          = $msg['direction'] ?? $payload['direction'] ?? 'incoming';
+        $zernioConvId       = $conv['id'] ?? $payload['conversation_id'] ?? null;
+        $participantName    = $conv['participantName'] ?? $payload['sender_name'] ?? $senderName;
+        $participantUsername = $conv['participantUsername'] ?? null;
+        $platform           = $conv['platform'] ?? $msg['platform'] ?? $payload['platform'] ?? $socialAccount->platform;
+
+        // ── Check for duplicate message ────────────────────────
+        if ($zernioMessageId) {
+            $exists = InboxMessage::where('zernio_message_id', $zernioMessageId)->exists();
+            if ($exists) {
+                Log::info("Skipping duplicate message {$zernioMessageId}");
+                return;
+            }
+        }
+
+        // ── Upsert conversation ────────────────────────────────
+        $conversation = Conversation::upsertFromNormalized([
+            'conversation_id'  => $zernioConvId,
+            'sender_name'      => $participantName,
+            'sender_id'        => $senderId,
+            'account_id'       => $zernioAccountId,
+            'text'             => $messageText,
+            'platform'         => $platform,
+        ], $socialAccount->tenant_id, $socialAccount->id);
+
+        // ── Create local message ───────────────────────────────
+        $inboxMessage = InboxMessage::create([
             'tenant_id'         => $socialAccount->tenant_id,
+            'conversation_id'   => $conversation->id,
             'social_account_id' => $socialAccount->id,
-            'sender_name'       => $payload['sender_name'] ?? 'Unknown',
-            'sender_id'         => $payload['sender_id'] ?? null,
-            'message_text'      => $payload['text'] ?? '',
-            'platform'          => $socialAccount->platform,
+            'zernio_message_id' => $zernioMessageId,
+            'sender_name'       => $senderName,
+            'sender_id'         => $senderId,
+            'message_text'      => $messageText,
+            'platform'          => $platform,
             'type'              => 'dm',
+            'direction'         => $direction,
             'is_read'           => 0,
             'received_at'       => now(),
         ]);
 
-        // Fire real-time event for frontend
-        InboxEvent::create([
-            'tenant_id'  => $socialAccount->tenant_id,
-            'event_type' => 'new_message',
-            'payload'    => [
-                'account_id'      => $zernioAccountId,
-                'conversation_id' => $payload['conversation_id'] ?? null,
-                'sender_name'     => $payload['sender_name'] ?? 'Unknown',
-                'text'            => $payload['text'] ?? '',
-                'platform'        => $socialAccount->platform,
-            ],
+        // ── Increment unread on conversation ───────────────────
+        $conversation->incrementUnread();
+        $conversation->refresh();
+
+        Log::info("Webhook message: stored & broadcasting", [
+            'message_id'   => $zernioMessageId,
+            'conversation' => $conversation->zernio_conversation_id,
+            'tenant'       => $socialAccount->tenant_id,
         ]);
+
+        // ── Broadcast via Reverb (WebSocket) ───────────────────
+        broadcast(new InboxMessageReceived(
+            $socialAccount->tenant_id,
+            $inboxMessage,
+            $conversation
+        ));
     }
 
     /**

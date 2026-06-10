@@ -34,20 +34,17 @@ class RegisteredUserController extends Controller
         ]);
 
         DB::transaction(function () use ($request) {
-            $basicPackage = Package::where('name', 'Basic')->first();
+            $proPackage = Package::where('name', 'Pro')->first();
 
-            // Zernio profile will be created on first social-account connect,
-            // once the user has added at least one API key in Pengaturan Akun.
-
-            // Create tenant
+            // Create tenant with Pro package, no trial
             $tenant = Tenant::create([
                 'business_name'     => $request->business_name,
                 'owner_name'        => $request->owner_name,
                 'email'             => $request->email,
                 'phone'             => $request->phone,
-                'package_id'        => $basicPackage?->id,
+                'package_id'        => $proPackage?->id,
                 'status'            => 'active',
-                'expired_at'        => now()->addDays(14), // 14-day trial
+                'expired_at'        => null, // No expiry — active until cancelled
             ]);
 
             // Create the user and link to the tenant

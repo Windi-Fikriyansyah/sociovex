@@ -13,11 +13,6 @@ class AnalyticsController extends Controller
     {
         $tenant = Auth::user()->tenant;
 
-        // Check plan
-        if ($tenant->package && !$tenant->package->has_analytics) {
-            return view('analytics.upgrade', compact('tenant'));
-        }
-
         $period = $request->get('period', '30'); // days
         $accountId = $request->get('account_id');
 

@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\InboxConversationRead;
 use App\Models\Comment;
 use App\Models\CommentReply;
+use App\Models\Conversation;
 use App\Models\InboxMessage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -18,10 +20,6 @@ class InboxController extends Controller
     public function index(Request $request)
     {
         $tenant = Auth::user()->tenant;
-
-        if ($tenant->package && !$tenant->package->has_inbox) {
-            return view('inbox.upgrade', compact('tenant'));
-        }
 
         $filter = $request->get('filter', 'all'); // all | unreplied | replied
         $type   = $request->get('type', 'all');   // all | dm | comment
@@ -66,21 +64,14 @@ class InboxController extends Controller
 {
     $tenant = Auth::user()->tenant;
 
-    if ($tenant->package && !$tenant->package->has_inbox) {
-        return view('inbox.upgrade', compact('tenant'));
-    }
-
     $platform = $request->get('platform', 'all');
     $account  = $request->get('account', 'all');
     $filter   = $request->get('filter', 'all');
     $sort     = $request->get('sort', 'newest');
 
-    $socialAccounts = \App\Models\SocialAccount::where(
-        'tenant_id',
-        $tenant->id
-    )
-    ->where('status', 'active')
-    ->get();
+    $socialAccounts = \App\Models\SocialAccount::where('tenant_id', $tenant->id)
+        ->where('status', 'active')
+        ->get();
 
     $platforms = $socialAccounts
         ->pluck('platform')
@@ -88,83 +79,14 @@ class InboxController extends Controller
         ->sort()
         ->values();
 
-    $conversations = collect();
-
-    try {
-
-        $zernio = \App\Services\ZernioService::forTenant($tenant);
-
-        $params = [
-            'profileId' => $tenant->zernio_profile_id,
-            'limit'     => 50,
-            'sortOrder' => $sort === 'oldest'
-                ? 'asc'
-                : 'desc',
-        ];
-
-        if ($platform !== 'all') {
-            $params['platform'] = $platform;
-        }
-
-        if ($account !== 'all') {
-
-            $socialAccount = $socialAccounts
-                ->firstWhere(
-                    'zernio_account_id',
-                    $account
-                );
-
-            if ($socialAccount) {
-                $params['accountId'] =
-                    $socialAccount->zernio_account_id;
-            }
-        }
-
-        $response = $zernio->getInboxConversations($params);
-
-        $conversations = collect(
-            $response['data'] ?? []
-        );
-
-        // local fallback sort
-        $conversations = $sort === 'oldest'
-            ? $conversations->sortBy('updatedTime')->values()
-            : $conversations->sortByDesc('updatedTime')->values();
-
-        // read/unread
-        if ($filter === 'read') {
-            $conversations = $conversations->filter(
-                fn ($m) =>
-                    ($m['unreadCount'] ?? 0) === 0
-            );
-        }
-
-        if ($filter === 'unread') {
-            $conversations = $conversations->filter(
-                fn ($m) =>
-                    ($m['unreadCount'] ?? 0) > 0
-            );
-        }
-
-    } catch (\Throwable $e) {
-
-        \Log::error(
-            'Failed get Zernio conversations',
-            [
-                'message' => $e->getMessage(),
-            ]
-        );
-    }
+    // ── Try local DB first, fallback to Zernio API ────────────
+    $conversations = $this->getConversationsHybrid($tenant, $platform, $account, $filter, $sort);
 
     $stats = [
-        'total_messages' => $conversations->count(),
-
-        'unread_messages' => $conversations
-            ->filter(
-                fn ($m) =>
-                    ($m['unreadCount'] ?? 0) > 0
-            )
-            ->count(),
+        'total_messages'  => $conversations->count(),
+        'unread_messages' => $conversations->filter(
+            fn ($c) => ($c->unread_count ?? $c['unreadCount'] ?? 0) > 0
+        )->count(),
     ];
 
     return view('inbox.messages', [
@@ -188,81 +110,81 @@ class InboxController extends Controller
     {
         $tenant = Auth::user()->tenant;
 
-        $conversations = collect();
-
-        try {
-            $zernio = \App\Services\ZernioService::forTenant($tenant);
-
-            $params = [
-                'profileId' => $tenant->zernio_profile_id,
-                'limit'     => 50,
-                'sortOrder' => 'desc',
-            ];
-
-            $response = $zernio->getInboxConversations($params);
-            $conversations = collect($response['data'] ?? [])
-                ->sortByDesc('updatedTime')
-                ->values();
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ]);
-        }
+        $conversations = $this->getConversationsHybrid($tenant, 'all', 'all', 'all', 'newest');
 
         $stats = [
             'total_messages'  => $conversations->count(),
-            'unread_messages' => $conversations->filter(fn ($m) => ($m['unreadCount'] ?? 0) > 0)->count(),
+            'unread_messages' => $conversations->filter(
+                fn ($c) => ($c->unread_count ?? $c['unreadCount'] ?? 0) > 0
+            )->count(),
         ];
 
         return response()->json([
             'success'       => true,
-            'conversations' => $conversations,
-            'stats'         => $stats,
-        ]);
-    }
-
-    // -------------------------------------------------------------------------
-    //  Real-time events endpoint — returns new events and deletes them
-    // -------------------------------------------------------------------------
-
-    public function inboxEvents(Request $request)
-    {
-        $tenant = Auth::user()->tenant;
-        $since  = $request->query('since');
-
-        $query = \App\Models\InboxEvent::where('tenant_id', $tenant->id);
-
-        if ($since) {
-            $query->where('created_at', '>', $since);
-        }
-
-        $events = $query->orderBy('created_at')->limit(50)->get();
-
-        // Delete consumed events (older than 30 seconds to avoid race conditions)
-        \App\Models\InboxEvent::where('tenant_id', $tenant->id)
-            ->where('created_at', '<', now()->subSeconds(30))
-            ->delete();
-
-        return response()->json([
-            'success' => true,
-            'events'  => $events->map(fn ($e) => [
-                'type'      => $e->event_type,
-                'payload'   => $e->payload,
-                'timestamp' => $e->created_at->toIso8601String(),
+            'conversations' => $conversations->map(fn ($c) => [
+                'id'                 => $c->zernio_conversation_id ?? $c['id'] ?? null,
+                'local_id'           => $c->id ?? $c['local_id'] ?? null,
+                'participantName'    => $c->participant_name ?? $c['participantName'] ?? null,
+                'participantPicture' => $c->participant_picture ?? $c['participantPicture'] ?? null,
+                'lastMessage'       => $c->last_message ?? $c['lastMessage'] ?? null,
+                'platform'          => $c->platform ?? $c['platform'] ?? null,
+                'accountUsername'   => $c->account_username ?? $c['accountUsername'] ?? null,
+                'accountId'         => $c->zernio_account_id ?? $c['accountId'] ?? null,
+                'unreadCount'       => $c->unread_count ?? $c['unreadCount'] ?? 0,
+                'updatedTime'       => $c->last_message_at?->toIso8601String() ?? $c['updatedTime'] ?? null,
             ]),
-            'server_time' => now()->toIso8601String(),
+            'stats' => $stats,
         ]);
     }
 
+    // -----------------------------------------------------------------
+    //  Messages for a specific conversation (from local DB)
+    // -----------------------------------------------------------------
 
-
-public function conversationMessages(Request $request, string $id)
-{
-    try {
+    public function conversationMessages(Request $request, string $id)
+    {
         $tenant    = Auth::user()->tenant;
         $accountId = $request->query('accountId');
 
+        // ── Try local DB first ──────────────────────────────────
+        $conversation = Conversation::where('tenant_id', $tenant->id)
+            ->where('zernio_conversation_id', $id)
+            ->first();
+
+        if ($conversation) {
+            $messages = InboxMessage::where('conversation_id', $conversation->id)
+                ->orderBy('received_at')
+                ->limit(200)
+                ->get()
+                ->map(fn ($m) => [
+                    'id'           => $m->id,
+                    'message'      => $m->message_text,
+                    'senderName'   => $m->sender_name,
+                    'direction'    => $m->direction,
+                    'platform'     => $m->platform,
+                    'isRead'       => $m->is_read,
+                    'createdAt'    => $m->received_at?->toIso8601String(),
+                ]);
+
+            // If we have local messages, return them
+            if ($messages->isNotEmpty()) {
+                return response()->json([
+                    'success'       => true,
+                    'conversation'  => [
+                        'id'                  => $conversation->zernio_conversation_id,
+                        'local_id'            => $conversation->id,
+                        'participantName'     => $conversation->participant_name,
+                        'participantPicture'  => $conversation->participant_picture,
+                        'platform'           => $conversation->platform,
+                        'accountUsername'    => $conversation->account_username,
+                        'accountId'          => $conversation->zernio_account_id,
+                    ],
+                    'data' => $messages,
+                ]);
+            }
+        }
+
+        // ── Fallback: fetch from Zernio API ─────────────────────
         if (!$accountId) {
             return response()->json([
                 'success' => false,
@@ -270,27 +192,44 @@ public function conversationMessages(Request $request, string $id)
             ], 400);
         }
 
-        $zernio = \App\Services\ZernioService::forTenant($tenant);
-        $response = $zernio->getConversationMessages($id, $accountId);
+        try {
+            $apiKey = null;
+            if ($conversation && $conversation->socialAccount) {
+                $apiKey = $conversation->socialAccount->zernioApiKey;
+            }
+            if (!$apiKey && $accountId) {
+                $socialAccount = \App\Models\SocialAccount::where('tenant_id', $tenant->id)
+                    ->where('zernio_account_id', $accountId)
+                    ->first();
+                if ($socialAccount) {
+                    $apiKey = $socialAccount->zernioApiKey;
+                }
+            }
+            if (!$apiKey) {
+                $apiKey = $tenant->zernioApiKeys()->where('is_active', true)->first();
+            }
 
-        return response()->json([
-            'success' => true,
-            'data' => $response['messages'] ?? $response['data'] ?? [],
-        ]);
+            $zernio = new \App\Services\ZernioService($apiKey?->api_key);
+            $response = $zernio->getConversationMessages($id, $accountId);
 
-    } catch (\Throwable $e) {
-        \Log::error('Failed get conversation messages', [
-            'conversation_id' => $id,
-            'account_id'      => $request->query('accountId'),
-            'message'         => $e->getMessage(),
-        ]);
+            return response()->json([
+                'success' => true,
+                'data'    => $response['messages'] ?? $response['data'] ?? [],
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('Failed get conversation messages', [
+                'conversation_id' => $id,
+                'account_id'      => $accountId,
+                'message'         => $e->getMessage(),
+            ]);
 
-        return response()->json([
-            'success' => false,
-            'message' => 'Failed load messages: ' . $e->getMessage(),
-        ], 500);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed load messages: ' . $e->getMessage(),
+            ], 500);
+        }
     }
-}
+
     // -------------------------------------------------------------------------
     //  Comments
     // -------------------------------------------------------------------------
@@ -298,10 +237,6 @@ public function conversationMessages(Request $request, string $id)
     public function comments(Request $request)
     {
         $tenant = Auth::user()->tenant;
-
-        if ($tenant->package && !$tenant->package->has_inbox) {
-            return view('inbox.upgrade', compact('tenant'));
-        }
 
         $platform = $request->get('platform', 'all');
         $account  = $request->get('account', 'all');
@@ -403,12 +338,60 @@ public function conversationMessages(Request $request, string $id)
         $tenant = Auth::user()->tenant;
 
         try {
-            $zernio = \App\Services\ZernioService::forTenant($tenant);
+            $conversation = Conversation::where('tenant_id', $tenant->id)
+                ->where('zernio_conversation_id', $conversationId)
+                ->first();
+
+            $apiKey = null;
+            if ($conversation && $conversation->socialAccount) {
+                $apiKey = $conversation->socialAccount->zernioApiKey;
+            }
+            if (!$apiKey && $request->accountId) {
+                $socialAccount = \App\Models\SocialAccount::where('tenant_id', $tenant->id)
+                    ->where('zernio_account_id', $request->accountId)
+                    ->first();
+                if ($socialAccount) {
+                    $apiKey = $socialAccount->zernioApiKey;
+                }
+            }
+            if (!$apiKey) {
+                $apiKey = $tenant->zernioApiKeys()->where('is_active', true)->first();
+            }
+
+            $zernio = new \App\Services\ZernioService($apiKey?->api_key);
             $result = $zernio->sendConversationMessage(
                 $conversationId,
                 $request->accountId,
                 $request->message
             );
+
+            // Store outgoing message in local DB
+            $conversation = Conversation::where('tenant_id', $tenant->id)
+                ->where('zernio_conversation_id', $conversationId)
+                ->first();
+
+            if ($conversation) {
+                InboxMessage::create([
+                    'tenant_id'         => $tenant->id,
+                    'conversation_id'   => $conversation->id,
+                    'social_account_id' => $conversation->social_account_id,
+                    'zernio_message_id' => $result['data']['_id'] ?? $result['data']['id'] ?? null,
+                    'sender_name'       => $conversation->account_username ?? 'You',
+                    'message_text'      => $request->message,
+                    'platform'          => $conversation->platform,
+                    'type'              => 'dm',
+                    'direction'         => 'outgoing',
+                    'is_read'           => 1,
+                    'received_at'       => now(),
+                    'sent_at'           => now(),
+                ]);
+
+                // Update conversation's last message
+                $conversation->update([
+                    'last_message'    => $request->message,
+                    'last_message_at' => now(),
+                ]);
+            }
 
             return response()->json([
                 'success' => true,
@@ -442,8 +425,51 @@ public function conversationMessages(Request $request, string $id)
         $tenant = Auth::user()->tenant;
 
         try {
-            $zernio = \App\Services\ZernioService::forTenant($tenant);
+            $conversation = Conversation::where('tenant_id', $tenant->id)
+                ->where('zernio_conversation_id', $conversationId)
+                ->first();
+
+            $apiKey = null;
+            if ($conversation && $conversation->socialAccount) {
+                $apiKey = $conversation->socialAccount->zernioApiKey;
+            }
+            if (!$apiKey && $request->accountId) {
+                $socialAccount = \App\Models\SocialAccount::where('tenant_id', $tenant->id)
+                    ->where('zernio_account_id', $request->accountId)
+                    ->first();
+                if ($socialAccount) {
+                    $apiKey = $socialAccount->zernioApiKey;
+                }
+            }
+            if (!$apiKey) {
+                $apiKey = $tenant->zernioApiKeys()->where('is_active', true)->first();
+            }
+
+            // Mark as read via Zernio API
+            $zernio = new \App\Services\ZernioService($apiKey?->api_key);
             $zernio->markConversationAsRead($conversationId, $request->accountId);
+
+            // Update local conversation
+            $conversation = Conversation::where('tenant_id', $tenant->id)
+                ->where('zernio_conversation_id', $conversationId)
+                ->first();
+
+            if ($conversation) {
+                $conversation->resetUnread();
+
+                // Also mark all messages in this conversation as read
+                InboxMessage::where('conversation_id', $conversation->id)
+                    ->where('is_read', 0)
+                    ->update(['is_read' => 1]);
+
+                // Broadcast the read status to other sessions
+                broadcast(new InboxConversationRead(
+                    $tenant->id,
+                    $conversation->id,
+                    $conversation->zernio_conversation_id,
+                    0
+                ));
+            }
 
             return response()->json(['success' => true]);
         } catch (\Throwable $e) {
@@ -454,6 +480,155 @@ public function conversationMessages(Request $request, string $id)
 
             // Still return success — marking as read is non-critical
             return response()->json(['success' => true]);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    //  Hybrid: local DB first, Zernio API fallback + auto-sync
+    // -------------------------------------------------------------------------
+
+    /**
+     * Get conversations from local DB. If empty, fetch from Zernio API,
+     * persist to local DB, then return the local records.
+     */
+    private function getConversationsHybrid($tenant, string $platform, string $account, string $filter, string $sort)
+    {
+        // ── Try local DB ────────────────────────────────────────
+        $query = Conversation::where('tenant_id', $tenant->id)
+            ->where('status', 'active');
+
+        if ($platform !== 'all') {
+            $query->where('platform', $platform);
+        }
+        if ($account !== 'all') {
+            $query->where('zernio_account_id', $account);
+        }
+        if ($filter === 'read') {
+            $query->where('unread_count', 0);
+        } elseif ($filter === 'unread') {
+            $query->where('unread_count', '>', 0);
+        }
+        $sort === 'oldest'
+            ? $query->orderBy('last_message_at')
+            : $query->orderByDesc('last_message_at');
+
+        $local = $query->limit(50)->get();
+
+        if ($local->isNotEmpty()) {
+            return $local;
+        }
+
+        // ── Fallback: Zernio API + sync to local DB ─────────────
+        return $this->syncConversationsFromZernio($tenant, $platform, $account, $filter, $sort);
+    }
+
+    /**
+     * Fetch conversations from Zernio API, upsert to local DB,
+     * then return the local Eloquent collection.
+     */
+    private function syncConversationsFromZernio($tenant, string $platform, string $account, string $filter, string $sort)
+    {
+        try {
+            // Get the API keys we need to sync for
+            $apiKeys = collect();
+            if ($account !== 'all') {
+                $socialAccount = \App\Models\SocialAccount::where('tenant_id', $tenant->id)
+                    ->where('zernio_account_id', $account)
+                    ->first();
+                if ($socialAccount && $socialAccount->zernioApiKey) {
+                    $apiKeys->push($socialAccount->zernioApiKey);
+                }
+            }
+
+            if ($apiKeys->isEmpty()) {
+                $apiKeys = $tenant->zernioApiKeys()
+                    ->where('is_active', true)
+                    ->whereNotNull('zernio_profile_id')
+                    ->get();
+            }
+
+            foreach ($apiKeys as $apiKey) {
+                if (!$apiKey->zernio_profile_id) {
+                    continue;
+                }
+
+                $zernio = new \App\Services\ZernioService($apiKey->api_key);
+
+                $params = [
+                    'profileId' => $apiKey->zernio_profile_id,
+                    'limit'     => 50,
+                    'sortOrder' => $sort === 'oldest' ? 'asc' : 'desc',
+                ];
+
+                if ($platform !== 'all') {
+                    $params['platform'] = $platform;
+                }
+                if ($account !== 'all') {
+                    $params['accountId'] = $account;
+                }
+
+                try {
+                    $response   = $zernio->getInboxConversations($params);
+                    $apiResults = collect($response['data'] ?? []);
+
+                    // Upsert each conversation to local DB
+                    foreach ($apiResults as $convData) {
+                        $zernioConvId  = $convData['id'] ?? null;
+                        $zernioAcctId  = $convData['accountId'] ?? null;
+                        if (!$zernioConvId) continue;
+
+                        $socialAccount = $zernioAcctId
+                            ? \App\Models\SocialAccount::where('zernio_account_id', $zernioAcctId)->first()
+                            : null;
+
+                        Conversation::updateOrCreate(
+                            ['zernio_conversation_id' => $zernioConvId],
+                            [
+                                'tenant_id'           => $tenant->id,
+                                'social_account_id'   => $socialAccount?->id,
+                                'participant_name'    => $convData['participantName'] ?? null,
+                                'participant_picture' => $convData['participantPicture'] ?? null,
+                                'platform'            => $convData['platform'] ?? null,
+                                'account_username'    => $convData['accountUsername'] ?? null,
+                                'zernio_account_id'   => $zernioAcctId,
+                                'last_message'        => $convData['lastMessage'] ?? null,
+                                'last_message_at'     => $convData['updatedTime'] ?? now(),
+                                'unread_count'        => $convData['unreadCount'] ?? 0,
+                                'status'              => 'active',
+                            ]
+                        );
+                    }
+                } catch (\Throwable $e) {
+                    \Log::error("Failed to sync conversations for API Key {$apiKey->id}: " . $e->getMessage());
+                }
+            }
+
+            // Now re-query from local DB (with filters applied)
+            $query = Conversation::where('tenant_id', $tenant->id)
+                ->where('status', 'active');
+
+            if ($platform !== 'all') {
+                $query->where('platform', $platform);
+            }
+            if ($account !== 'all') {
+                $query->where('zernio_account_id', $account);
+            }
+            if ($filter === 'read') {
+                $query->where('unread_count', 0);
+            } elseif ($filter === 'unread') {
+                $query->where('unread_count', '>', 0);
+            }
+            $sort === 'oldest'
+                ? $query->orderBy('last_message_at')
+                : $query->orderByDesc('last_message_at');
+
+            return $query->limit(50)->get();
+
+        } catch (\Throwable $e) {
+            \Log::error('Failed get Zernio conversations (hybrid)', [
+                'message' => $e->getMessage(),
+            ]);
+            return collect();
         }
     }
 }

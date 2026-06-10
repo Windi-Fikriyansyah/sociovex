@@ -14,7 +14,7 @@
         <div class="row align-items-center">
             <div class="col">
                 <h6 class="text-muted mb-1">Paket Aktif Anda</h6>
-                <h4 class="mb-0">{{ $currentPackage?->name ?? 'Trial (14 Hari)' }}</h4>
+                <h4 class="mb-0">{{ $currentPackage?->name ?? 'Pro' }}</h4>
                 @if($activeSubscription)
                     <small class="text-muted">
                         Aktif: {{ $activeSubscription->start_date->format('d M Y') }} &mdash;
@@ -27,8 +27,10 @@
                             <span class="badge bg-danger ms-1">Expired</span>
                         @else
                             <span class="badge bg-success ms-1">Aktif</span>
-                        @endif
+                        @endif>
                     </small>
+                @else
+                    <small class="text-muted">Aktif tanpa batas waktu</small>
                 @endif
             </div>
             <div class="col-auto">
@@ -40,23 +42,20 @@
     </div>
 </div>
 
-<!-- Package Cards -->
+<!-- Package Card — Single Pro Plan -->
 <div class="row justify-content-center mb-4">
     @foreach($packages as $package)
     @php
         $isCurrentPlan = $currentPackage?->id === $package->id;
-        $isPopular = $package->name === 'Pro';
     @endphp
-    <div class="col-lg-4 col-md-6 mb-4">
-        <div class="card h-100 {{ $isPopular ? 'border-primary' : '' }}" style="{{ $isPopular ? 'border: 2px solid #4680ff;' : '' }}">
-            @if($isPopular)
+    <div class="col-lg-6 col-md-8 mb-4">
+        <div class="card h-100 border-primary" style="border: 2px solid #4680ff;">
             <div class="card-header text-center py-2" style="background: #4680ff; color: white;">
-                <strong><i class="ti ti-star-filled me-1"></i>PALING POPULER</strong>
+                <strong><i class="ti ti-star-filled me-1"></i>PAKET PRO</strong>
             </div>
-            @endif
             <div class="card-body d-flex flex-column">
                 <div class="text-center mb-4">
-                    <h4 class="fw-bold">{{ $package->name }}</h4>
+                    <h4 class="fw-bold">Pro</h4>
                     <div class="my-3">
                         <span style="font-size:36px;font-weight:700;color:#4680ff;">
                             Rp{{ number_format($package->price, 0, ',', '.') }}
@@ -68,59 +67,28 @@
                 <ul class="list-unstyled flex-grow-1">
                     <li class="mb-2">
                         <i class="ti ti-check text-success me-2"></i>
-                        <strong>{{ $package->max_social_accounts }}</strong> akun sosial media
+                        <strong>Unlimited</strong> akun sosial media
                     </li>
                     <li class="mb-2">
                         <i class="ti ti-check text-success me-2"></i>
                         Scheduler & Content Calendar
                     </li>
-                    @if($package->has_inbox)
                     <li class="mb-2">
                         <i class="ti ti-check text-success me-2"></i>
-                        Inbox Terpusat
+                        Inbox Terpusat (Real-time)
                     </li>
-                    @else
-                    <li class="mb-2 text-muted">
-                        <i class="ti ti-x text-danger me-2"></i>
-                        Inbox Terpusat
-                    </li>
-                    @endif
-                    @if($package->has_ai_reply)
                     <li class="mb-2">
                         <i class="ti ti-check text-success me-2"></i>
-                        AI Auto Reply
-                        @if($package->max_ai_replies > 0)
-                            <small class="text-muted">({{ number_format($package->max_ai_replies) }} replies/bulan)</small>
-                        @endif
+                        AI Auto Reply <small class="text-muted">(Unlimited)</small>
                     </li>
-                    @else
-                    <li class="mb-2 text-muted">
-                        <i class="ti ti-x text-danger me-2"></i>
-                        AI Auto Reply
-                    </li>
-                    @endif
-                    @if($package->has_analytics)
                     <li class="mb-2">
                         <i class="ti ti-check text-success me-2"></i>
                         Analytics Lengkap
                     </li>
-                    @else
-                    <li class="mb-2 text-muted">
-                        <i class="ti ti-x text-danger me-2"></i>
-                        Analytics Lengkap
-                    </li>
-                    @endif
-                    @if($package->has_multi_user)
                     <li class="mb-2">
                         <i class="ti ti-check text-success me-2"></i>
-                        Multi User (hingga {{ $package->max_users }} pengguna)
+                        Multi User <small class="text-muted">(Unlimited)</small>
                     </li>
-                    @else
-                    <li class="mb-2 text-muted">
-                        <i class="ti ti-x text-danger me-2"></i>
-                        Multi User
-                    </li>
-                    @endif
                 </ul>
 
                 <div class="mt-3">
@@ -132,14 +100,8 @@
                         <form action="{{ route('subscription.checkout') }}" method="POST">
                             @csrf
                             <input type="hidden" name="package_id" value="{{ $package->id }}">
-                            <button type="submit" class="btn btn-{{ $isPopular ? 'primary' : 'outline-primary' }} w-100">
-                                @if($currentPackage && $package->price > $currentPackage->price)
-                                    <i class="ti ti-arrow-up me-1"></i>Upgrade ke {{ $package->name }}
-                                @elseif($currentPackage && $package->price < $currentPackage->price)
-                                    <i class="ti ti-arrow-down me-1"></i>Downgrade ke {{ $package->name }}
-                                @else
-                                    <i class="ti ti-credit-card me-1"></i>Pilih {{ $package->name }}
-                                @endif
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="ti ti-credit-card me-1"></i>Berlangganan Pro
                             </button>
                         </form>
                     @endif

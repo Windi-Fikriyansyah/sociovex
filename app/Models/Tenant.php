@@ -11,7 +11,6 @@ class Tenant extends Model
 {
     protected $fillable = [
         'uuid', 'business_name', 'owner_name', 'email', 'phone',
-        'zernio_profile_id',
         'package_id', 'status', 'expired_at',
     ];
 

@@ -6,7 +6,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=0, minimal-ui">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="csrf-token" content="{{ csrf_token() }}">
+        <meta name="csrf-token" content="{{ csrf_token() }}">
+        @auth
+        <meta name="tenant-id" content="{{ Auth::user()->tenant_id }}">
+        @endauth
 
     <link rel="icon" href="{{ asset('images/logo/logo-icon.svg') }}" type="image/x-icon">
 
@@ -82,6 +85,8 @@
     </style>
 
     @stack('styles')
+
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 
 <body data-pc-preset="preset-1" data-pc-direction="ltr" data-pc-theme="light">

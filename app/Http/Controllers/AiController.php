@@ -17,11 +17,6 @@ class AiController extends Controller
     {
         $tenant = Auth::user()->tenant;
 
-        // Check plan
-        if ($tenant->package && !$tenant->package->has_ai_reply) {
-            return view('ai.upgrade', compact('tenant'));
-        }
-
         $aiSetting = AiSetting::where('tenant_id', $tenant->id)->first()
             ?? new AiSetting(['model' => 'gpt-4o-mini', 'temperature' => 0.7, 'auto_reply_enabled' => 0]);
 

@@ -42,17 +42,17 @@ api('GET', "$base/v1/platforms/6a1fabcbdf7a0edc59add698", $key);
 
 // 3. Try the disconnect endpoint - test with the instagram account
 // First let's see what profileId is stored for the test tenant
-$tenant = \App\Models\Tenant::whereNotNull('zernio_profile_id')->first();
-if ($tenant) {
-    echo "Local tenant: id={$tenant->id} | zernio_profile_id={$tenant->zernio_profile_id}\n\n";
-    api('GET', "$base/v1/platforms/{$tenant->zernio_profile_id}", $key);
+$apiKey = \App\Models\ZernioApiKey::whereNotNull('zernio_profile_id')->first();
+if ($apiKey) {
+    echo "Local API Key: id={$apiKey->id} | label={$apiKey->label} | zernio_profile_id={$apiKey->zernio_profile_id}\n\n";
+    api('GET', "$base/v1/platforms/{$apiKey->zernio_profile_id}", $key);
 
-    $accounts = \App\Models\SocialAccount::where('tenant_id', $tenant->id)->get();
+    $accounts = \App\Models\SocialAccount::where('zernio_api_key_id', $apiKey->id)->get();
     foreach ($accounts as $acc) {
         echo "Local account: id={$acc->id} | platform={$acc->platform} | zernio_id={$acc->zernio_account_id} | status={$acc->status}\n";
         if ($acc->zernio_account_id) {
             api('DELETE', "$base/v1/connect/{$acc->platform}/{$acc->zernio_account_id}", $key, [
-                'profileId' => $tenant->zernio_profile_id,
+                'profileId' => $apiKey->zernio_profile_id,
             ]);
         }
     }

@@ -54,14 +54,14 @@
             </p>
             <div class="d-flex gap-3 justify-content-center flex-wrap">
                 <a href="{{ route('register') }}" class="btn btn-warning btn-lg px-5 fw-bold">
-                    <i class="ti ti-rocket me-2"></i>Mulai Gratis 14 Hari
+                    <i class="ti ti-rocket me-2"></i>Mulai Sekarang
                 </a>
                 <a href="#pricing" class="btn btn-outline-light btn-lg px-5">
                     Lihat Harga
                 </a>
             </div>
             <div class="mt-4 opacity-75" style="font-size:13px;">
-                Tidak perlu kartu kredit • Setup dalam 2 menit • Cancel kapan saja
+                Setup dalam 2 menit • Cancel kapan saja
             </div>
 
             <!-- Supported Platforms -->
@@ -132,40 +132,35 @@
         <div class="container">
             <div class="text-center mb-5">
                 <h2 style="font-size:36px;font-weight:700;">Harga Transparan</h2>
-                <p class="text-muted">Pilih paket yang sesuai dengan kebutuhan bisnis Anda</p>
+                <p class="text-muted">Satu paket, semua fitur tanpa batasan</p>
             </div>
             <div class="row justify-content-center g-4">
-                @foreach([
-                    ['Basic', '199.000', '1 akun sosial media', ['Scheduler & Calendar', 'Post sekarang atau jadwalkan', 'Support email'], false],
-                    ['Pro', '399.000', '5 akun sosial media', ['Semua fitur Basic', 'AI Auto Reply', 'Inbox Terpusat', '500 AI replies/bulan'], true],
-                    ['Agency', '999.000', '10 akun sosial media', ['Semua fitur Pro', 'Analytics Lengkap', 'Multi User (10 anggota)', '2000 AI replies/bulan'], false],
-                ] as [$name, $price, $accounts, $features, $popular])
-                <div class="col-lg-4 col-md-6">
-                    <div class="card pricing-card {{ $popular ? 'featured' : '' }} h-100">
-                        @if($popular)
+                <div class="col-lg-6 col-md-8">
+                    <div class="card pricing-card featured h-100">
                         <div class="card-header text-center py-2" style="background: #4680ff; color: white; border-radius: 8px 8px 0 0;">
-                            <strong>⭐ PALING POPULER</strong>
+                            <strong>⭐ PAKET PRO</strong>
                         </div>
-                        @endif
                         <div class="card-body p-4">
-                            <h4 class="fw-bold">{{ $name }}</h4>
+                            <h4 class="fw-bold">Pro</h4>
                             <div class="my-3">
-                                <span style="font-size:40px;font-weight:800;color:#4680ff;">Rp{{ $price }}</span>
+                                <span style="font-size:40px;font-weight:800;color:#4680ff;">Rp399.000</span>
                                 <span class="text-muted">/bulan</span>
                             </div>
-                            <p class="text-muted mb-3">{{ $accounts }}</p>
+                            <p class="text-muted mb-3">Unlimited akun sosial media</p>
                             <ul class="list-unstyled">
-                                @foreach($features as $feature)
-                                <li class="mb-2"><i class="ti ti-check text-success me-2"></i>{{ $feature }}</li>
-                                @endforeach
+                                <li class="mb-2"><i class="ti ti-check text-success me-2"></i>Semua Platform Sosial Media</li>
+                                <li class="mb-2"><i class="ti ti-check text-success me-2"></i>Scheduler & Content Calendar</li>
+                                <li class="mb-2"><i class="ti ti-check text-success me-2"></i>Inbox Terpusat (Real-time)</li>
+                                <li class="mb-2"><i class="ti ti-check text-success me-2"></i>AI Auto Reply (Unlimited)</li>
+                                <li class="mb-2"><i class="ti ti-check text-success me-2"></i>Analytics Lengkap</li>
+                                <li class="mb-2"><i class="ti ti-check text-success me-2"></i>Multi User (Unlimited)</li>
                             </ul>
-                            <a href="{{ route('register') }}" class="btn btn-{{ $popular ? 'primary' : 'outline-primary' }} w-100 mt-3">
+                            <a href="{{ route('register') }}" class="btn btn-primary w-100 mt-3">
                                 Mulai Sekarang
                             </a>
                         </div>
                     </div>
                 </div>
-                @endforeach
             </div>
         </div>
     </section>
@@ -173,10 +168,10 @@
     <!-- CTA -->
     <section style="padding: 80px 0; background: linear-gradient(135deg, #4680ff, #7c3aed); color: white;">
         <div class="container text-center">
-            <h2 style="font-size:40px;font-weight:800;" class="mb-3">Mulai 14 Hari Trial Gratis</h2>
+            <h2 style="font-size:40px;font-weight:800;" class="mb-3">Mulai Kelola Media Sosial Anda</h2>
             <p class="mb-5 opacity-80" style="font-size:18px;">Bergabung dengan ribuan bisnis yang sudah menggunakan SocialPilot AI</p>
             <a href="{{ route('register') }}" class="btn btn-warning btn-lg px-5 fw-bold" style="font-size:18px;">
-                <i class="ti ti-rocket me-2"></i>Daftar Gratis Sekarang
+                <i class="ti ti-rocket me-2"></i>Daftar Sekarang
             </a>
         </div>
     </section>

@@ -19,48 +19,54 @@ class SyncZernioProfiles extends Command
 
     public function handle(): int
     {
-        $query = $this->option('force')
-            ? Tenant::query()
-            : Tenant::whereNull('zernio_profile_id')->orWhere('zernio_profile_id', '');
+        $query = \App\Models\ZernioApiKey::where('is_active', true);
+        if (!$this->option('force')) {
+            $query->where(function($q) {
+                $q->whereNull('zernio_profile_id')->orWhere('zernio_profile_id', '');
+            });
+        }
 
-        $tenants = $query->get();
+        $apiKeys = $query->with('tenant')->get();
 
-        if ($tenants->isEmpty()) {
-            $this->info('Semua tenant sudah punya Zernio profile.');
+        if ($apiKeys->isEmpty()) {
+            $this->info('Semua API key yang aktif sudah memiliki Zernio profile.');
             return self::SUCCESS;
         }
 
-        $this->info("Memproses {$tenants->count()} tenant...");
-        $bar = $this->output->createProgressBar($tenants->count());
+        $this->info("Memproses {$apiKeys->count()} API key...");
+        $bar = $this->output->createProgressBar($apiKeys->count());
         $bar->start();
 
         $success = 0;
         $failed  = 0;
         $skipped = 0;
 
-        foreach ($tenants as $tenant) {
-            // Each tenant needs at least one API key to create a profile
-            $firstKey = $tenant->zernioApiKeys()->where('is_active', true)->first();
+        foreach ($apiKeys as $apiKey) {
+            $tenant = $apiKey->tenant;
 
-            if (!$firstKey) {
+            if (!$tenant) {
                 $this->newLine();
-                $this->warn("Tenant #{$tenant->id} ({$tenant->business_name}): No API key configured, skipping.");
+                $this->warn("API Key #{$apiKey->id} ({$apiKey->label}): Tenant tidak ditemukan, dilewati.");
                 $skipped++;
                 $bar->advance();
                 continue;
             }
 
-            $zernio = new ZernioService($firstKey->api_key);
+            $zernio = new ZernioService($apiKey->api_key);
 
             try {
-                $result    = $zernio->createProfile($tenant->business_name . '_' . \Illuminate\Support\Str::random(6));
+                $profileName = $tenant->business_name . '_' . $apiKey->label . '_' . \Illuminate\Support\Str::random(4);
+                $result    = $zernio->createProfile($profileName);
                 $profileId = $result['profile']['_id'] ?? null;
 
                 if (!$profileId) {
                     throw new \RuntimeException('createProfile returned no profile ID.');
                 }
 
-                $tenant->update(['zernio_profile_id' => $profileId]);
+                $apiKey->update([
+                    'zernio_profile_id' => $profileId,
+                    'profile_created_at' => now(),
+                ]);
 
                 // Register webhook for all relevant events
                 try {
@@ -70,14 +76,14 @@ class SyncZernioProfiles extends Command
                         ['new_message', 'new_comment', 'post_published', 'post_failed']
                     );
                 } catch (\RuntimeException $e) {
-                    Log::warning("Webhook registration failed for tenant {$tenant->id}: {$e->getMessage()}");
+                    Log::warning("Webhook registration failed for API Key {$apiKey->id}: {$e->getMessage()}");
                 }
 
                 $success++;
             } catch (\RuntimeException $e) {
                 $this->newLine();
-                $this->error("Tenant #{$tenant->id} ({$tenant->business_name}): {$e->getMessage()}");
-                Log::error("SyncZernioProfiles failed for tenant {$tenant->id}: {$e->getMessage()}");
+                $this->error("API Key #{$apiKey->id} ({$apiKey->label}): {$e->getMessage()}");
+                Log::error("SyncZernioProfiles failed for API Key {$apiKey->id}: {$e->getMessage()}");
                 $failed++;
             }
 

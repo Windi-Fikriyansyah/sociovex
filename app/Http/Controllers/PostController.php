@@ -123,10 +123,14 @@ class PostController extends Controller
 
         foreach ($accounts as $account) {
             try {
-                $zernio = $this->zernioForAccount($account, $tenant);
+                $apiKey = $account->zernioApiKey ?: $tenant->zernioApiKeys()->where('is_active', true)->first();
+                if (!$apiKey || !$apiKey->zernio_profile_id) {
+                    throw new RuntimeException("API Key atau Profile ID Zernio tidak ditemukan untuk akun {$account->platform} (@{$account->username}).");
+                }
+                $zernio = new ZernioService($apiKey->api_key);
 
                 $payload = [
-                    'profileId'  => $tenant->zernio_profile_id,
+                    'profileId'  => $apiKey->zernio_profile_id,
                     'accountIds' => [$account->zernio_account_id],
                     'content'    => $fullText,
                 ];
@@ -184,10 +188,14 @@ class PostController extends Controller
 
         foreach ($accounts as $account) {
             try {
-                $zernio = $this->zernioForAccount($account, $tenant);
+                $apiKey = $account->zernioApiKey ?: $tenant->zernioApiKeys()->where('is_active', true)->first();
+                if (!$apiKey || !$apiKey->zernio_profile_id) {
+                    throw new RuntimeException("API Key atau Profile ID Zernio tidak ditemukan untuk akun {$account->platform} (@{$account->username}).");
+                }
+                $zernio = new ZernioService($apiKey->api_key);
 
                 $payload = [
-                    'profileId'  => $tenant->zernio_profile_id,
+                    'profileId'  => $apiKey->zernio_profile_id,
                     'accountIds' => [$account->zernio_account_id],
                     'content'    => $fullText,
                     'scheduleAt' => (new \DateTime($scheduledAt))->format(\DateTime::ATOM),

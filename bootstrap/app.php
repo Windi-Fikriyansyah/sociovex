@@ -8,11 +8,18 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
         commands: __DIR__.'/../routes/console.php',
+        channels: __DIR__.'/../routes/channels.php',
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->alias([
             'tenant.active' => \App\Http\Middleware\EnsureTenantActive::class,
+        ]);
+
+        // Exclude webhook routes from CSRF verification
+        // Zernio sends POST requests without a CSRF token
+        $middleware->validateCsrfTokens(except: [
+            '/webhook/*',
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

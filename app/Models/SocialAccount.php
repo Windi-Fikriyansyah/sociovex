@@ -11,11 +11,15 @@ class SocialAccount extends Model
     protected $fillable = [
         'tenant_id', 'zernio_api_key_id', 'zernio_account_id', 'platform', 'username',
         'profile_name', 'avatar', 'access_token', 'refresh_token',
-        'connected_at', 'status',
+        'connected_at', 'status',        'is_ads_account',
+        'parent_account_id', 
+        'ads_scope',
     ];
 
     protected $casts = [
         'connected_at' => 'datetime',
+        'is_ads_account' => 'boolean',
+    'ads_scope' => 'array',
     ];
 
     protected $hidden = ['access_token', 'refresh_token'];
@@ -71,5 +75,51 @@ class SocialAccount extends Model
             'youtube' => '#FF0000',
             default => '#6c757d',
         };
+    }
+
+
+     public function getPlatformDisplayNameAttribute(): string
+    {
+        return match($this->platform) {
+            'metaads' => 'Meta Ads',
+            'linkedinads' => 'LinkedIn Ads',
+            'tiktokads' => 'TikTok Ads',
+            'xads' => 'X Ads',
+            'pinterestads' => 'Pinterest Ads',
+            'googleads' => 'Google Ads',
+            default => ucfirst($this->platform),
+        };
+    }
+
+    public function isAdsAccount(): bool
+    {
+        return $this->is_ads_account === true;
+    }
+
+    public function isPostingAccount(): bool
+    {
+        return $this->is_ads_account === false;
+    }
+
+    // ─── Scopes ───────────────────────────────────────────────────
+    
+    public function scopeAdsAccounts($query)
+    {
+        return $query->where('is_ads_account', true);
+    }
+
+    public function scopePostingAccounts($query)
+    {
+        return $query->where('is_ads_account', false);
+    }
+    
+    public function scopeActive($query)
+    {
+        return $query->where('status', 'active');
+    }
+    
+    public function scopeByPlatform($query, string $platform)
+    {
+        return $query->where('platform', $platform);
     }
 }

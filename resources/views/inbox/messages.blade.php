@@ -19,13 +19,16 @@
                     <span class="inbox-title">
                         Messages
                         @if ($stats['unread_messages'] > 0)
-                            <span class="inbox-badge inbox-badge-unread">{{ $stats['unread_messages'] }} unread</span>
+                            <span class="inbox-badge inbox-badge-unread" id="unread-badge">{{ $stats['unread_messages'] }} unread</span>
+                        @else
+                            <span class="inbox-badge inbox-badge-unread" id="unread-badge" style="display:none;">0 unread</span>
                         @endif
-                        <span class="inbox-badge">{{ $stats['total_messages'] }}</span>
+                        <span class="inbox-badge" id="total-badge">{{ $stats['total_messages'] }}</span>
                     </span>
                     <button class="inbox-icon-btn" title="Refresh" onclick="location.reload()">
                         <i class="ti ti-refresh"></i>
                     </button>
+                    <span id="ws-status" title="WebSocket: checking..." style="font-size:14px;cursor:help;">⚪</span>
                 </div>
 
                 <div class="d-flex gap-2 mt-3">
@@ -46,14 +49,12 @@
                         @foreach ($socialAccounts as $acc)
                             <option
                                 value="{{ request()->fullUrlWithQuery(['account' => $acc->zernio_account_id]) }}"
-                                {{ $account == $acc->zernio_account_id ? 'selected' : '' }}>
+                                {{ $account == $acc->zernio_account_id ? 'selected' : '' }}">
                                 {{ '@' . $acc->username }}
                             </option>
                         @endforeach
                     </select>
                 </div>
-
-                {{-- Filter tabs removed --}}
             </div>
 
             <div class="inbox-toolbar">
@@ -66,20 +67,21 @@
                 </select>
             </div>
 
-            <div class="inbox-conv-list">
-                @forelse($messages as $message)
+            <div class="inbox-conv-list" id="conv-list">
+                @forelse($messages as $conv)
                     @php
-                        $sender           = trim($message['participantName'] ?? '');
-                        $text             = trim($message['lastMessage'] ?? '');
-                        $convPlatform     = $message['platform'] ?? 'instagram';
-                        $updated          = $message['updatedTime'] ?? now();
-                        $convId           = $message['id'] ?? null;
-                        $participantPic   = $message['participantPicture'] ?? null;
-                        $accountUsername  = $message['accountUsername'] ?? '';
-                        $zernioAccountId  = $message['accountId'] ?? '';
-                        $unreadCount      = (int) ($message['unreadCount'] ?? 0);
+                        $sender           = trim($conv->participant_name ?? '');
+                        $text             = trim($conv->last_message ?? '');
+                        $convPlatform     = $conv->platform ?? 'instagram';
+                        $updated          = $conv->last_message_at ?? now();
+                        $convId           = $conv->zernio_conversation_id ?? null;
+                        $participantPic   = $conv->participant_picture ?? null;
+                        $accountUsername  = $conv->account_username ?? '';
+                        $zernioAccountId  = $conv->zernio_account_id ?? '';
+                        $unreadCount      = (int) ($conv->unread_count ?? 0);
                         $isUnread         = $unreadCount > 0;
                         $initial          = strtoupper(substr($sender ?: 'U', 0, 1));
+                        $localId          = $conv->id;
 
                         if ($sender === '') $sender = 'User';
                         if ($text === '')   $text = '[Attachment]';
@@ -87,12 +89,14 @@
 
                     <div class="inbox-conv-item {{ $loop->first ? 'active' : '' }} {{ $isUnread ? 'unread' : '' }}"
                         data-id="{{ $convId }}"
+                        data-local-id="{{ $localId }}"
                         data-account-id="{{ $zernioAccountId }}"
                         data-name="{{ $sender }}"
                         data-platform="{{ $convPlatform }}"
                         data-via="{{ '@' . $accountUsername }}"
                         data-avatar="{{ $participantPic }}"
                         data-initial="{{ $initial }}"
+                        data-unread="{{ $unreadCount }}"
                         onclick="openConversation(this, '{{ $convId }}')">
 
                         <div class="inbox-avatar {{ $convPlatform }}">
@@ -121,7 +125,7 @@
                                 @endif
                                 <span class="preview-text">{{ \Illuminate\Support\Str::limit($text, 38) }}</span>
                                 @if ($isUnread)
-                                    <span class="unread-dot"></span>
+                                    <span class="unread-badge-count" style="background:#dc2626;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:99px;margin-left:auto;flex-shrink:0;">{{ $unreadCount }}</span>
                                 @endif
                             </div>
                         </div>
@@ -237,8 +241,6 @@
     color: #dc2626;
 }
 
-/* Filter tabs — removed */
-
 /* toolbar */
 .inbox-toolbar {
     display: flex;
@@ -307,23 +309,6 @@
 
 .inbox-conv-item.unread .inbox-conv-name { font-weight: 700; color: #000; }
 .inbox-conv-item.unread .preview-text { font-weight: 600; color: #333; }
-
-/* Unread dot */
-.unread-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: #dc2626;
-    flex-shrink: 0;
-    margin-left: auto;
-    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.2);
-    animation: pulse-dot 2s ease-in-out infinite;
-}
-
-@keyframes pulse-dot {
-    0%, 100% { box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.2); }
-    50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.1); }
-}
 
 /* avatar */
 .inbox-avatar {
@@ -615,6 +600,18 @@
 .inbox-conv-item.new-flash {
     animation: fadeIn 0.6s ease;
 }
+
+/* ── WebSocket status indicator ── */
+.ws-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-left: 4px;
+}
+.ws-status.connected { background: #4caf50; }
+.ws-status.disconnected { background: #dc2626; }
+.ws-status.connecting { background: #ff9800; animation: pulse-dot 1s ease-in-out infinite; }
 </style>
 @endpush
 
@@ -623,15 +620,16 @@
 // ────────────────────────────────────────────
 // State
 // ────────────────────────────────────────────
-let currentConversationId = null;
-let currentAccountId = null;
-let currentPlatform = null;
-let currentAvatar = null;
-let currentInitial = null;
+let currentConversationId = null;  // zernio_conversation_id
+let currentLocalId        = null;  // local DB id
+let currentAccountId      = null;
+let currentPlatform       = null;
+let currentAvatar         = null;
+let currentInitial        = null;
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
-// Polling state
-let lastKnownUnreadMap = {};
+// Notification sound (short beep)
+const notifySound = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACA');
 
 // ────────────────────────────────────────────
 // Open conversation
@@ -643,17 +641,19 @@ async function openConversation(el, id) {
 
     // Remove unread styling since user opened it
     el.classList.remove('unread');
-    const dot = el.querySelector('.unread-dot');
-    if (dot) dot.remove();
+    const badge = el.querySelector('.unread-badge-count');
+    if (badge) badge.remove();
+    el.dataset.unread = '0';
 
     // Store state
     currentConversationId = id;
-    currentAccountId = el.dataset.accountId || '';
-    currentPlatform = el.dataset.platform;
-    currentAvatar = el.dataset.avatar;
-    currentInitial = el.dataset.initial;
+    currentLocalId        = el.dataset.localId || '';
+    currentAccountId      = el.dataset.accountId || '';
+    currentPlatform       = el.dataset.platform;
+    currentAvatar         = el.dataset.avatar;
+    currentInitial        = el.dataset.initial;
     const name = el.dataset.name;
-    const via = el.dataset.via;
+    const via  = el.dataset.via;
 
     // Show panel
     document.getElementById('panel-empty').classList.add('d-none');
@@ -705,9 +705,6 @@ async function loadMessages(id) {
         renderMessages(messages);
         body.scrollTop = body.scrollHeight;
 
-        // Track message count for polling
-        lastKnownMsgCount = messages.length;
-
     } catch (e) {
         body.innerHTML = `<div class="text-danger text-center py-4"><i class="ti ti-alert-circle me-1"></i>Failed to load messages<br><small>${escapeHtml(e.message)}</small></div>`;
     }
@@ -746,6 +743,34 @@ function renderMessages(messages) {
 }
 
 // ────────────────────────────────────────────
+// Append a single new message (from WebSocket)
+// ────────────────────────────────────────────
+function appendMessage(msg) {
+    const body = document.getElementById('messages-body');
+    if (!body) return;
+
+    const isOut = msg.direction === 'outgoing';
+    const text = escapeHtml(msg.message_text || msg.message || msg.text || '');
+    const time = msg.received_at || msg.createdAt || new Date().toISOString();
+
+    const html = `
+        <div class="msg-group new-flash">
+            <div class="msg-ts ${isOut ? 'out' : ''}">${formatTime(time)}</div>
+            <div class="msg-row ${isOut ? 'out' : ''}">
+                ${!isOut ? `
+                    <div class="inbox-avatar ${currentPlatform}"
+                        style="width:28px;height:28px;min-width:28px;font-size:11px;">
+                        ${currentAvatar ? `<img src="${currentAvatar}">` : currentInitial}
+                    </div>` : ''}
+                <div class="msg-bubble ${isOut ? 'out' : 'in'}">${text}</div>
+            </div>
+        </div>`;
+
+    body.insertAdjacentHTML('beforeend', html);
+    body.scrollTop = body.scrollHeight;
+}
+
+// ────────────────────────────────────────────
 // Send reply
 // ────────────────────────────────────────────
 async function sendReply() {
@@ -760,7 +785,7 @@ async function sendReply() {
     input.disabled = true;
     sendBtn.disabled = true;
 
-    // Append the outgoing message immediately
+    // Append the outgoing message immediately (optimistic)
     const body = document.getElementById('messages-body');
     const tempId = 'msg-' + Date.now();
     body.insertAdjacentHTML('beforeend', `
@@ -809,6 +834,9 @@ async function sendReply() {
             if (s) s.remove();
         }, 3000);
 
+        // Update sidebar preview for this conversation
+        updateSidebarPreview(currentConversationId, text);
+
     } catch (e) {
         // Show failed status
         const statusEl = document.getElementById(`${tempId}-status`);
@@ -817,7 +845,6 @@ async function sendReply() {
             statusEl.classList.add('failed');
         }
 
-        // Show error toast
         showToast('Gagal mengirim pesan. Coba lagi.', 'danger');
     }
 
@@ -865,6 +892,7 @@ function closePanel() {
     document.getElementById('panel-active').classList.add('d-none');
     document.getElementById('panel-empty').classList.remove('d-none');
     currentConversationId = null;
+    currentLocalId = null;
 }
 
 // ────────────────────────────────────────────
@@ -917,227 +945,358 @@ window.addEventListener('load', () => {
         openConversation(first, first.dataset.id);
     }
 
-    // Start auto-polling
-    startPolling();
+    // Initialize WebSocket
+    initWebSocket();
 });
 
-// ────────────────────────────────────────────
-// AUTO-POLLING
-// ────────────────────────────────────────────
-let pollTimerConv = null;     // conversation list poll (every 15s)
-let pollTimerMsg = null;     // messages poll (every 10s)
-let pollTimerEvents = null;  // webhook event poll (every 2s)
-let lastKnownConvIds = new Set();
-let lastKnownMsgCount = 0;
-let isPolling = true;
-let lastEventCheck = new Date().toISOString();
+// ════════════════════════════════════════════
+//  WEBSOCKET (Laravel Echo + Reverb)
+// ════════════════════════════════════════════
 
-// Notification sound (short beep)
-const notifySound = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACA');
+function initWebSocket() {
+    const tenantId = document.querySelector('meta[name="tenant-id"]')?.content;
+    if (!tenantId) {
+        console.warn('[Inbox] No tenant-id meta tag — falling back to polling');
+        startFallbackPolling();
+        return;
+    }
+    if (!window.Echo) {
+        console.warn('[Inbox] Laravel Echo not loaded — falling back to polling');
+        startFallbackPolling();
+        return;
+    }
 
-function startPolling() {
-    // Collect current conversation IDs and unread counts as baseline
-    document.querySelectorAll('.inbox-conv-item').forEach(el => {
-        lastKnownConvIds.add(el.dataset.id);
-        // Store initial unread state from data attribute
-        const hasUnread = el.classList.contains('unread');
-        lastKnownUnreadMap[el.dataset.id] = hasUnread ? 1 : 0;
-    });
-
-    // Poll conversation list every 15 seconds
-    pollTimerConv = setInterval(pollConversations, 15000);
-
-    // Poll current conversation messages every 10 seconds
-    pollTimerMsg = setInterval(pollMessages, 10000);
-
-    // Fast event polling every 2 seconds (for webhook-triggered updates)
-    pollTimerEvents = setInterval(pollEvents, 2000);
-
-    // Pause polling when tab is hidden, resume when visible
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            isPolling = false;
-            clearInterval(pollTimerConv);
-            clearInterval(pollTimerMsg);
-            clearInterval(pollTimerEvents);
-        } else {
-            isPolling = true;
-            lastEventCheck = new Date().toISOString();
-            // Immediately poll on return
-            pollConversations();
-            pollMessages();
-            pollEvents();
-            // Restart timers
-            pollTimerConv = setInterval(pollConversations, 15000);
-            pollTimerMsg = setInterval(pollMessages, 10000);
-            pollTimerEvents = setInterval(pollEvents, 2000);
-        }
-    });
-}
-
-// ── Fast event polling (checks for webhook events every 2s) ──
-async function pollEvents() {
-    if (!isPolling) return;
+    console.log('[Inbox] Subscribing to private-tenant.' + tenantId + '.inbox');
 
     try {
-        const res = await fetch(`{{ route("inbox.events") }}?since=${encodeURIComponent(lastEventCheck)}`);
-        const json = await res.json();
+        const channel = window.Echo.private(`tenant.${tenantId}.inbox`);
 
-        if (!json.success) return;
+        channel
+            .listen('.inbox.message.received', (e) => {
+                console.log('[Inbox] WS event: inbox.message.received', e);
+                handleIncomingMessage(e.message, e.conversation);
+            })
+            .listen('.inbox.conversation.read', (e) => {
+                console.log('[Inbox] WS event: inbox.conversation.read', e);
+                handleConversationRead(e);
+            });
 
-        const events = json.events ?? [];
-        if (events.length === 0) return;
-
-        // Update last check time
-        lastEventCheck = json.server_time || new Date().toISOString();
-
-        // Process each event
-        let hasNewMessage = false;
-        let hasNewComment = false;
-
-        events.forEach(evt => {
-            if (evt.type === 'new_message') {
-                hasNewMessage = true;
-            } else if (evt.type === 'new_comment') {
-                hasNewComment = true;
-            }
+        // Monitor connection state
+        window.Echo.connector.pusher.connection.bind('connected', () => {
+            console.log('[Inbox] WebSocket CONNECTED');
+            updateWsStatus('connected');
+        });
+        window.Echo.connector.pusher.connection.bind('disconnected', () => {
+            console.warn('[Inbox] WebSocket DISCONNECTED');
+            updateWsStatus('disconnected');
+        });
+        window.Echo.connector.pusher.connection.bind('error', (err) => {
+            console.error('[Inbox] WebSocket CONNECTION ERROR:', err);
+            updateWsStatus('error');
+            startFallbackPolling();
         });
 
-        // Instantly refresh conversation list + current messages
-        if (hasNewMessage || hasNewComment) {
-            pollConversations();
-            if (currentConversationId) {
-                pollMessages();
-            }
-            playNotification();
-
-            if (hasNewMessage) {
-                showToast('Pesan baru masuk!', 'info');
-            }
-            if (hasNewComment) {
-                showToast('Komentar baru masuk!', 'info');
-            }
-        }
-
-    } catch (e) {
-        // Silent fail
+    } catch (err) {
+        console.error('[Inbox] Failed to subscribe:', err);
+        startFallbackPolling();
     }
 }
 
-// ── Poll conversation list ──
-async function pollConversations() {
-    if (!isPolling) return;
+function updateWsStatus(status) {
+    const el = document.getElementById('ws-status');
+    if (!el) return;
+    const icons = { connected: '🟢', disconnected: '🔴', error: '⚠️' };
+    el.textContent = icons[status] || '⚪';
+    el.title = 'WebSocket: ' + status;
+}
 
+// ────────────────────────────────────────────
+// Handle incoming message from WebSocket
+// ────────────────────────────────────────────
+function handleIncomingMessage(message, conversation) {
+    const convId = conversation.zernio_conversation_id;
+
+    playNotification();
+
+    // ── CASE 1: User is viewing THIS conversation ──
+    if (currentConversationId === convId) {
+        // Append message directly to chat panel (no full reload)
+        appendMessage(message);
+
+        // Mark as read since user is viewing it
+        markAsRead(convId);
+
+        // Update sidebar preview (same conversation)
+        updateSidebarPreview(convId, message.message_text);
+    }
+    // ── CASE 2: Message from a DIFFERENT conversation ──
+    else {
+        // Update sidebar: update preview + increment unread badge
+        updateSidebarConversation(conversation);
+
+        // Show toast notification
+        const senderName = conversation.participant_name || 'Someone';
+        const preview = (message.message_text || '').substring(0, 30);
+        showToast(`<strong>${escapeHtml(senderName)}</strong>: ${escapeHtml(preview)}`, 'info');
+    }
+
+    // Update header badges
+    updateHeaderBadges();
+}
+
+// ────────────────────────────────────────────
+// Handle conversation read event from WebSocket
+// ────────────────────────────────────────────
+function handleConversationRead(e) {
+    const convId = e.zernio_conversation_id;
+
+    // Update sidebar unread count for this conversation
+    const el = document.querySelector(`.inbox-conv-item[data-id="${convId}"]`);
+    if (el) {
+        el.classList.remove('unread');
+        el.dataset.unread = '0';
+        const badge = el.querySelector('.unread-badge-count');
+        if (badge) badge.remove();
+    }
+
+    updateHeaderBadges();
+}
+
+// ────────────────────────────────────────────
+// Update sidebar preview for a specific conversation
+// ────────────────────────────────────────────
+function updateSidebarPreview(convId, newMessageText) {
+    const el = document.querySelector(`.inbox-conv-item[data-id="${convId}"]`);
+    if (!el) return;
+
+    // Update preview text
+    const previewEl = el.querySelector('.preview-text');
+    if (previewEl) {
+        previewEl.textContent = (newMessageText || '').substring(0, 38);
+    }
+
+    // Update time
+    const timeEl = el.querySelector('.inbox-conv-time');
+    if (timeEl) {
+        timeEl.textContent = 'Just now';
+    }
+
+    // Move conversation to top of list (if not already first)
+    const list = document.getElementById('conv-list');
+    if (list && list.firstElementChild !== el) {
+        list.prepend(el);
+        el.classList.add('new-flash');
+        setTimeout(() => el.classList.remove('new-flash'), 600);
+    }
+}
+
+// ────────────────────────────────────────────
+// Update sidebar conversation (from a DIFFERENT conversation)
+// ────────────────────────────────────────────
+function updateSidebarConversation(conversation) {
+    const convId = conversation.zernio_conversation_id;
+    let el = document.querySelector(`.inbox-conv-item[data-id="${convId}"]`);
+
+    if (el) {
+        // ── Update existing conversation item ──
+        // Update preview
+        const previewEl = el.querySelector('.preview-text');
+        if (previewEl) {
+            previewEl.textContent = (conversation.last_message || '').substring(0, 38);
+        }
+
+        // Update time
+        const timeEl = el.querySelector('.inbox-conv-time');
+        if (timeEl) {
+            timeEl.textContent = 'Just now';
+        }
+
+        // Increment unread badge
+        const currentUnread = parseInt(el.dataset.unread || '0');
+        const newUnread = currentUnread + 1;
+        el.dataset.unread = newUnread;
+        el.classList.add('unread');
+
+        // Update or add unread count badge
+        let badge = el.querySelector('.unread-badge-count');
+        if (badge) {
+            badge.textContent = newUnread;
+        } else {
+            const previewDiv = el.querySelector('.inbox-conv-preview');
+            if (previewDiv) {
+                previewDiv.insertAdjacentHTML('beforeend',
+                    `<span class="unread-badge-count" style="background:#dc2626;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:99px;margin-left:auto;flex-shrink:0;">${newUnread}</span>`
+                );
+            }
+        }
+
+        // Move to top of list
+        const list = document.getElementById('conv-list');
+        if (list && list.firstElementChild !== el) {
+            list.prepend(el);
+            el.classList.add('new-flash');
+            setTimeout(() => el.classList.remove('new-flash'), 600);
+        }
+    } else {
+        // ── New conversation (not in sidebar yet) ──
+        // Prepend a new conversation item at top of list
+        const list = document.getElementById('conv-list');
+        if (!list) return;
+
+        const sender = (conversation.participant_name || 'User').trim();
+        const text = (conversation.last_message || '[Attachment]').trim();
+        const platform = conversation.platform || 'instagram';
+        const accountId = conversation.account_id || conversation.zernio_account_id || '';
+        const avatar = conversation.participant_picture || '';
+        const initial = sender.charAt(0).toUpperCase();
+        const unreadCount = conversation.unread_count || 1;
+
+        // Platform icon
+        let platformIcon = 'brand-instagram';
+        if (platform === 'facebook') platformIcon = 'brand-facebook';
+        else if (platform === 'tiktok') platformIcon = 'brand-tiktok';
+        else if (platform === 'twitter' || platform === 'x') platformIcon = 'brand-x';
+
+        const html = `
+            <div class="inbox-conv-item unread new-flash"
+                data-id="${convId}"
+                data-local-id="${conversation.id || ''}"
+                data-account-id="${accountId}"
+                data-name="${escapeHtml(sender)}"
+                data-platform="${platform}"
+                data-via="@${escapeHtml(conversation.account_username || '')}"
+                data-avatar="${avatar}"
+                data-initial="${initial}"
+                data-unread="${unreadCount}"
+                onclick="openConversation(this, '${convId}')">
+
+                <div class="inbox-avatar ${platform}">
+                    ${avatar ? `<img src="${avatar}" alt="">` : initial}
+                </div>
+                <div class="inbox-conv-body">
+                    <div class="inbox-conv-top">
+                        <span class="inbox-conv-name">${escapeHtml(sender)}</span>
+                        <span class="inbox-conv-time">Just now</span>
+                    </div>
+                    <div class="inbox-conv-via">via @${escapeHtml(conversation.account_username || '')}</div>
+                    <div class="inbox-conv-preview">
+                        <span class="platform-dot ${platform}"><i class="ti ti-${platformIcon}"></i></span>
+                        <span class="preview-text">${escapeHtml(text.substring(0, 38))}</span>
+                        <span class="unread-badge-count" style="background:#dc2626;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:99px;margin-left:auto;flex-shrink:0;">${unreadCount}</span>
+                    </div>
+                </div>
+            </div>`;
+
+        // Remove empty list message if present
+        const emptyMsg = list.querySelector('.inbox-empty-list');
+        if (emptyMsg) emptyMsg.remove();
+
+        list.insertAdjacentHTML('afterbegin', html);
+        setTimeout(() => {
+            const newEl = list.querySelector('.new-flash');
+            if (newEl) newEl.classList.remove('new-flash');
+        }, 600);
+    }
+}
+
+// ────────────────────────────────────────────
+// Update header badges
+// ────────────────────────────────────────────
+function updateHeaderBadges() {
+    // Count unread conversations from sidebar
+    let unreadCount = 0;
+    let totalCount = 0;
+    document.querySelectorAll('.inbox-conv-item').forEach(el => {
+        totalCount++;
+        const u = parseInt(el.dataset.unread || '0');
+        if (u > 0) unreadCount++;
+    });
+
+    // Update unread badge
+    const unreadBadge = document.getElementById('unread-badge');
+    if (unreadBadge) {
+        if (unreadCount > 0) {
+            unreadBadge.textContent = unreadCount + ' unread';
+            unreadBadge.style.display = '';
+        } else {
+            unreadBadge.style.display = 'none';
+        }
+    }
+
+    // Update total badge
+    const totalBadge = document.getElementById('total-badge');
+    if (totalBadge) totalBadge.textContent = totalCount;
+
+    // Update page title
+    if (unreadCount > 0) {
+        document.title = `(${unreadCount}) Messages - Inbox`;
+    } else {
+        document.title = 'Messages - Inbox';
+    }
+}
+
+// ────────────────────────────────────────────
+// Play notification sound
+// ────────────────────────────────────────────
+function playNotification() {
+    try {
+        notifySound.play().catch(() => {});
+    } catch (e) {}
+}
+
+// ────────────────────────────────────────────
+// Fallback polling (only if WebSocket fails)
+// ────────────────────────────────────────────
+let fallbackPollTimer = null;
+
+function startFallbackPolling() {
+    // Poll every 15 seconds as fallback
+    fallbackPollTimer = setInterval(pollConversations, 15000);
+}
+
+async function pollConversations() {
     try {
         const res = await fetch('{{ route("inbox.conversations.json") }}');
         const json = await res.json();
-
         if (!json.success) return;
 
         const convs = json.conversations ?? [];
         const stats = json.stats ?? {};
 
-        // Update unread badge in header
-        const badgeEl = document.querySelector('.inbox-badge-unread');
-        if (badgeEl) {
+        // Update unread badge
+        const unreadBadge = document.getElementById('unread-badge');
+        if (unreadBadge) {
             if (stats.unread_messages > 0) {
-                badgeEl.textContent = stats.unread_messages + ' unread';
-                badgeEl.style.display = '';
+                unreadBadge.textContent = stats.unread_messages + ' unread';
+                unreadBadge.style.display = '';
             } else {
-                badgeEl.style.display = 'none';
+                unreadBadge.style.display = 'none';
             }
         }
 
-        // Update total badge
-        const totalBadges = document.querySelectorAll('.inbox-badge:not(.inbox-badge-unread)');
-        totalBadges.forEach(b => b.textContent = stats.total_messages);
+        const totalBadge = document.getElementById('total-badge');
+        if (totalBadge) totalBadge.textContent = stats.total_messages;
 
-        // Update page title with unread count
         if (stats.unread_messages > 0) {
             document.title = `(${stats.unread_messages}) Messages - Inbox`;
         } else {
             document.title = 'Messages - Inbox';
         }
 
-        // Check for new conversations or unread changes
-        const newConvIds = new Set(convs.map(c => c.id));
-        const newUnreadMap = {};
-        convs.forEach(c => { newUnreadMap[c.id] = c.unreadCount || 0; });
-
-        let hasNew = false;
-        let hasUnreadChange = false;
-
-        // Detect new conversations
-        for (const id of newConvIds) {
-            if (!lastKnownConvIds.has(id)) {
-                hasNew = true;
-            }
-        }
-
-        // Detect unread count changes on existing conversations
-        for (const [id, count] of Object.entries(newUnreadMap)) {
-            if (lastKnownUnreadMap[id] !== undefined && lastKnownUnreadMap[id] !== count) {
-                hasUnreadChange = true;
-            }
-        }
-
-        if (hasNew || hasUnreadChange) {
-            updateConversationList(convs);
-
-            if (hasNew) {
-                playNotification();
-                showToast('Pesan baru masuk!', 'info');
-            }
-        }
-
-        lastKnownConvIds = newConvIds;
-        lastKnownUnreadMap = newUnreadMap;
-
-    } catch (e) {
-        // Silent fail on poll
-    }
-}
-
-// ── Poll messages in current conversation ──
-async function pollMessages() {
-    if (!isPolling || !currentConversationId || !currentAccountId) return;
-
-    try {
-        const res = await fetch(
-            `/inbox/messages/${encodeURIComponent(currentConversationId)}?accountId=${encodeURIComponent(currentAccountId)}`
-        );
-        const json = await res.json();
-
-        if (!json.success) return;
-
-        const messages = json.data ?? [];
-        const newCount = messages.length;
-
-        // If more messages than before, new message arrived
-        if (newCount > lastKnownMsgCount && lastKnownMsgCount > 0) {
-            renderMessages(messages);
-            playNotification();
-
-            // Mark as read since we're viewing it
-            markAsRead(currentConversationId);
-        }
-
-        lastKnownMsgCount = newCount;
+        // Rebuild sidebar
+        rebuildConversationList(convs);
 
     } catch (e) {
         // Silent fail
     }
 }
 
-// ── Update sidebar conversation list ──
-function updateConversationList(convs) {
-    const list = document.querySelector('.inbox-conv-list');
+function rebuildConversationList(convs) {
+    const list = document.getElementById('conv-list');
     if (!list) return;
 
-    // Track which conversation was active
     const activeId = currentConversationId;
 
-    // Rebuild entire list from fresh data
     const html = convs.map(conv => {
         const sender = (conv.participantName || 'User').trim();
         const text = (conv.lastMessage || '[Attachment]').trim();
@@ -1154,7 +1313,6 @@ function updateConversationList(convs) {
         try { timeStr = new Date(time).toLocaleString('id-ID', {hour:'2-digit', minute:'2-digit'}); }
         catch(e) { timeStr = ''; }
 
-        // Platform icon class
         let platformIcon = 'brand-instagram';
         if (platform === 'facebook') platformIcon = 'brand-facebook';
         else if (platform === 'tiktok') platformIcon = 'brand-tiktok';
@@ -1163,18 +1321,19 @@ function updateConversationList(convs) {
         return `
             <div class="inbox-conv-item ${isActive ? 'active' : ''} ${isUnread ? 'unread' : ''}"
                 data-id="${conv.id}"
+                data-local-id="${conv.local_id || ''}"
                 data-account-id="${accountId}"
                 data-name="${escapeHtml(sender)}"
                 data-platform="${platform}"
                 data-via="@${escapeHtml(conv.accountUsername || '')}"
                 data-avatar="${avatar}"
                 data-initial="${initial}"
+                data-unread="${unreadCount}"
                 onclick="openConversation(this, '${conv.id}')">
 
                 <div class="inbox-avatar ${platform}">
                     ${avatar ? `<img src="${avatar}" alt="">` : initial}
                 </div>
-
                 <div class="inbox-conv-body">
                     <div class="inbox-conv-top">
                         <span class="inbox-conv-name">${escapeHtml(sender)}</span>
@@ -1184,7 +1343,7 @@ function updateConversationList(convs) {
                     <div class="inbox-conv-preview">
                         <span class="platform-dot ${platform}"><i class="ti ti-${platformIcon}"></i></span>
                         <span class="preview-text">${escapeHtml(text.substring(0, 38))}</span>
-                        ${isUnread ? '<span class="unread-dot"></span>' : ''}
+                        ${isUnread ? `<span class="unread-badge-count" style="background:#dc2626;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:99px;margin-left:auto;flex-shrink:0;">${unreadCount}</span>` : ''}
                     </div>
                 </div>
             </div>`;
@@ -1199,13 +1358,6 @@ function updateConversationList(convs) {
     } else {
         list.innerHTML = html;
     }
-}
-
-// ── Play notification sound ──
-function playNotification() {
-    try {
-        notifySound.play().catch(() => {});
-    } catch (e) {}
 }
 </script>
 @endpush

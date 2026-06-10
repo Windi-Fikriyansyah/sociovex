@@ -12,6 +12,8 @@ class ZernioApiKey extends Model
         'label',
         'api_key',
         'webhook_secret',
+        'zernio_profile_id',  // Tambahkan ini
+        'profile_created_at',
         'is_active',
     ];
 
